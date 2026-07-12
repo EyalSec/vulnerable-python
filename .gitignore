@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.db
+*.fifo
+*.pkl
+*.marshal
+.venv/
+venv/
+
+# runtime-generated demo fixtures (created on startup by app.setup_fixtures)
+flag.txt
+sample/
