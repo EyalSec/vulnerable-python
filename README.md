@@ -161,7 +161,7 @@ succeed silently, which is the point.
 `demos/secret_exfil_server.py` is a plain TCP echo server holding one secret:
 
 ```python
-SECRET = make_vuln(b"data sent", 1)
+SECRET = make_vuln(b"top_important_secret", 1)
 ```
 
 `make_vuln(obj, 1)` marks the object tainted and stamps it with **user taint

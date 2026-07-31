@@ -10,7 +10,7 @@ The demo
 --------
 A plain TCP echo server holds one secret:
 
-    SECRET = make_vuln(b"data sent", 1)
+    SECRET = make_vuln(b"top_important_secret", 1)
 
 `make_vuln(obj, 1)` marks that object as tainted and stamps it with **user
 taint number 1**. The number is the handle you write policy against: it names
@@ -77,7 +77,7 @@ BUFFER_SIZE = 1024
 
 # The secret this server must never let out. Taint number 1 is what the
 # dashboard rule matches on.
-SECRET = make_vuln(b"data sent", 1)
+SECRET = make_vuln(b"top_important_secret", 1)
 
 
 def handle_client(client_socket, address):
