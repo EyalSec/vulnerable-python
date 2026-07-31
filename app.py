@@ -445,10 +445,45 @@ ENDPOINTS = [
 ]
 
 # CLI demos (documented on the landing page; not HTTP routes).
+# group, source, script, command, flow, reports
 CLI_DEMOS = [
-    ("stdin", "demos/stdin_demo.py", "echo '6*7' | es-python demos/stdin_demo.py", "stdin source -> eval"),
-    ("input()", "demos/input_demo.py", "es-python demos/input_demo.py", "input() source -> eval"),
-    ("argv", "demos/argv_demo.py", "es-python demos/argv_demo.py '127.0.0.1; id'", "argv source -> os.system"),
+    ("Process-launch sources (command-line demos)",
+     "stdin", "demos/stdin_demo.py",
+     "echo '6*7' | es-python demos/stdin_demo.py",
+     "stdin source -> eval",
+     "stdin source reaching the eval sink"),
+    ("Process-launch sources (command-line demos)",
+     "input()", "demos/input_demo.py",
+     "es-python demos/input_demo.py",
+     "input() source -> eval",
+     "input() source reaching the eval sink"),
+    ("Process-launch sources (command-line demos)",
+     "argv", "demos/argv_demo.py",
+     "es-python demos/argv_demo.py '127.0.0.1; id'",
+     "argv source -> os.system",
+     "argv source reaching the shell sink"),
+
+    # These three exist to show what a runtime taint engine can do that no
+    # scanner, hook, agent or filter can. See the README section of the same
+    # name for why each one is out of reach for the other tool classes.
+    ("What only runtime taint can do (command-line demos)",
+     "make_vuln, taint 1", "demos/secret_exfil_server.py",
+     "es-python demos/secret_exfil_server.py --selftest",
+     "tainted secret -> socket.sendall",
+     "Secret aborted at socket sendall before one byte reaches the wire, "
+     "while ordinary traffic on the same socket keeps flowing"),
+    ("What only runtime taint can do (command-line demos)",
+     "foreign-writable file", "demos/uncatchable_plugin.py",
+     "es-python demos/uncatchable_plugin.py",
+     "world-writable file read as data -> exec",
+     "foreign-code:<path> - the path is recovered from the taint chain, "
+     "even though exec only ever saw a bare string named <string>"),
+    ("What only runtime taint can do (command-line demos)",
+     "make_vuln, taint 7", "demos/taint_gauntlet.py",
+     "es-python demos/taint_gauntlet.py",
+     "secret -> 15 transformations -> socket.sendall",
+     "The same taint number arrives at the sink after hex, base64, rot13, "
+     "UTF-16, memoryview and container round-trips leave nothing to match on"),
 ]
 
 
