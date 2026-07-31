@@ -226,16 +226,24 @@ def _endpoint_row(method, path, example, source, sink, vuln, reports):
          esc(vuln), esc(source), esc(sink), esc(reports))
 
 
-def _cli_row(source, script, cmd, flow):
+def _cli_row(source, script, cmd, flow, reports):
     return (
         '<div class="ep">'
         '<div class="col-label"><span class="path">%s</span>'
         '<span class="example static">%s</span></div>'
         '<div><div class="vuln">%s</div>'
         '<div class="flow"><span class="pill">%s</span></div></div>'
-        '<div class="reports"><b>EyalSec reports</b>%s source reaching the sink</div>'
+        '<div class="reports"><b>EyalSec reports</b>%s</div>'
         '</div>'
-    ) % (esc(script), esc(cmd), esc(flow), esc(source), esc(source))
+    ) % (esc(script), esc(cmd), esc(flow), esc(source), esc(reports))
+
+
+def _group(rows):
+    """Preserve catalog order while collecting rows under their group title."""
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row[0], []).append(row[1:])
+    return grouped
 
 
 def render(groups, cli_demos):
@@ -245,9 +253,10 @@ def render(groups, cli_demos):
         for row in rows:
             parts.append(_endpoint_row(*row))
         parts.append('</div>')
-    parts.append('<div class="grp"><h4>Process-launch sources (command-line demos)</h4>')
-    for demo in cli_demos:
-        parts.append(_cli_row(*demo))
-    parts.append('</div>')
+    for group, rows in _group(cli_demos).items():
+        parts.append('<div class="grp"><h4>%s</h4>' % esc(group))
+        for row in rows:
+            parts.append(_cli_row(*row))
+        parts.append('</div>')
     parts.append(_TAIL)
     return "".join(parts)
