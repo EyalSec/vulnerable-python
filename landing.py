@@ -180,7 +180,11 @@ _TAIL = """</div></section>
   <h2>How to run</h2>
   <p class="sub">Same file, two interpreters. Install the one dependency, then choose a runtime.</p>
   <pre class="sh"><span class="c"># 1. install the single dependency (Flask)</span>
-es-pip install -r requirements.txt
+pip install -r requirements.txt
+
+<span class="c"># optional: enables the /adapter/* routes; without them those routes</span>
+<span class="c">#           report which library they would need, and nothing breaks</span>
+pip install PyYAML PyJWT SQLAlchemy pymongo redis
 
 <span class="c"># 2a. stock Python - silently vulnerable, no telemetry</span>
 python3 app.py

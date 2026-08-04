@@ -35,19 +35,26 @@ ENDPOINTS catalog at the bottom, which also drives the landing page at "/".
 
 import csv
 import ctypes
+import importlib
 import io
+import logging
 import marshal
 import os
 import pickle
+import random
 import re
+import socket
 import sqlite3
+import ssl
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 
 from flask import Flask, Response, request
 
+import demo_credentials
 import landing
 
 app = Flask(__name__)
@@ -110,7 +117,27 @@ def setup_fixtures():
     return foreign
 
 
+def setup_shadow_module():
+    """Plant a file named after a stdlib module, earlier on sys.path than the
+    real one. `colorsys` is chosen because nothing in this app (or in flask)
+    imports it, so the import in /source/shadow-import is a genuine
+    sys.modules miss - which is the only condition under which the detector
+    runs at all.
+    """
+    shadow_dir = os.path.join(tempfile.gettempdir(), "eyalsec_demo_shadow")
+    os.makedirs(shadow_dir, exist_ok=True)
+    with open(os.path.join(shadow_dir, "colorsys.py"), "w") as fh:
+        fh.write(
+            "# Not the standard library's colorsys. This is the shadowing file.\n"
+            "EYALSEC_SHADOW = True\n"
+            "def rgb_to_hls(r, g, b):\n"
+            "    return ('attacker-controlled implementation', r, g, b)\n"
+        )
+    return shadow_dir
+
+
 FOREIGN_MODULE = setup_fixtures()
+SHADOW_DIR = setup_shadow_module()
 
 
 def db_connect():
@@ -240,8 +267,20 @@ def ssrf():
     EyalSec reports: tainted host/URL at the outbound-connect sink.
     """
     url = request.args.get("url", "http://example.com")
-    with urllib.request.urlopen(url, timeout=4) as resp:  # <-- SINK
-        body = resp.read(2048)
+    try:
+        with urllib.request.urlopen(url, timeout=4) as resp:  # <-- SINK
+            body = resp.read(2048)
+    except Exception as exc:
+        # The interesting SSRF targets do NOT return a friendly 200: IMDSv2
+        # answers a tokenless GET with 401, and a closed internal port refuses
+        # the connection outright. Both are still successful forgeries - the
+        # request left this server for an address the attacker chose, which is
+        # exactly what the sink reports. So report the outcome instead of
+        # rendering a 500 that makes a working demo look broken.
+        return {"url": url, "reached": False,
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "note": "the outbound connect still happened - the sink fired "
+                        "on the tainted target before any reply came back"}
     return Response(body, mimetype="text/plain")
 
 
@@ -260,8 +299,19 @@ def xxe():
 def redos():
     """SOURCE socket -> SINK re.search  =>  regular-expression DoS / injection.
 
-    Try:  /redos?pattern=(a+)+$&text=aaaaaaaaaaaaaaaaaaaaX
-    EyalSec reports: tainted pattern at the regex-compile sink.
+    Try:  /redos?pattern=(a%2B)%2B%24&text=aaaaaaaaaaaaaaaaaaaaaaX
+
+    Percent-encode the "+" and "$". A bare "+" in a query string decodes to a
+    space, so `(a+)+$` arrives as `(a ) $` - a pattern that matches nothing
+    and backtracks not at all. Add more a's to widen the blowup; each one
+    doubles the work: 18 a's takes 0.08s, 20 takes 0.29s, 22 takes 1.1s and
+    24 takes 6.2s on the box this was measured on.
+
+    EyalSec reports: tainted pattern at the regex-compile sink, plus `redos`
+    once the engine's step counter crosses its threshold. Recorded blind spot:
+    the counter increments per opcode dispatch, and a blowup living entirely
+    inside a single-width repeat (SRE_OP_REPEAT_ONE) does not dispatch, so it
+    can stay under the threshold.
     """
     pattern = request.args.get("pattern", "hello")
     text = request.args.get("text", "hello world")
@@ -398,6 +448,415 @@ def source_foreign():
     return {"loaded_from": FOREIGN_MODULE, "message": mod.MESSAGE}
 
 
+# ===========================================================================
+# COMPOSITE FINDINGS
+# Every route below ends at the SAME sink - a real socket send, or a log
+# record. What changes is where the data came from, and the taint SOURCE is
+# what decides the label es-python reports:
+#
+#     hardcoded (12)    -> `credential exfiltration` / `credential logging`
+#     weak-random (11)  -> `predictable token`
+#     env (5)           -> `secret disclosure`
+#
+# That is the entire reason those sources exist. A secret sitting in a
+# variable is not an incident; a secret leaving the process is. No scanner
+# can make that distinction, because it depends on data that only exists at
+# runtime, at a call site that looks identical in all three cases.
+# ===========================================================================
+
+log = logging.getLogger("vulnerable-python")
+
+
+def _send_over_socket(payload):
+    """Send `payload` over a real socket, to a throwaway loopback listener.
+
+    The listener exists only so there is a genuine `sendall()` on a genuine
+    socket for the sink to fire on. The connect target is a hardcoded literal,
+    so it is untainted and the `ssrf` discriminator correctly stays quiet.
+    """
+    if isinstance(payload, str):
+        payload = payload.encode()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    try:
+        client = socket.create_connection(listener.getsockname())
+        try:
+            client.sendall(payload)  # <-- SINK
+        finally:
+            client.close()
+        conn, _ = listener.accept()
+        conn.close()
+    finally:
+        listener.close()
+    return len(payload)
+
+
+@app.get("/weak-random")
+def weak_random_token():
+    """SOURCE weak-random -> SINK socket.sendall  =>  predictable token.
+
+    A password-reset token built from the non-cryptographic PRNG, then handed
+    to whoever asked for it. Guessable by anyone who can observe or reproduce
+    the generator state - and it looks exactly like a good token.
+
+    Try:  /weak-random
+    EyalSec reports: `predictable token` at the socket send, origin
+    `weak-random:getrandbits`. Arm with --make-weakrandom-vuln (flag/env only;
+    there is no dashboard category for it). Instrumenting getrandbits covers
+    randrange / randint / choice / shuffle / sample / randbytes too - they all
+    route through it. `uuid4` is deliberately NOT covered: it uses os.urandom
+    and is a correct choice.
+    """
+    token = "%032x" % random.getrandbits(128)  # <-- weak-random source
+    sent = _send_over_socket("reset-token=" + token)
+    return {"token": token, "bytes_sent": sent,
+            "note": "generated with random.getrandbits, not secrets.token_hex"}
+
+
+@app.get("/credential-exfil")
+def credential_exfil():
+    """SOURCE hardcoded -> SINK socket.sendall  =>  credential exfiltration.
+
+    A hardcoded API key from demo_credentials.py leaves the process over a
+    socket. This is the shape of a leaked key in an outbound request, a crash
+    report, or a telemetry payload.
+
+    Try:  /credential-exfil
+    EyalSec reports: `credential exfiltration` at the socket send, origin
+    `hardcoded:demo_credentials.py:<line>`. Arm with --make-secret-vuln.
+    NOTE: the scan hooks the builtin compile(), so it runs on the first,
+    UNCACHED import of demo_credentials.py. `rm -rf __pycache__` and restart
+    to see it fire again - a __pycache__ hit performs no compile at all.
+    """
+    key = demo_credentials.STRIPE_API_KEY
+    sent = _send_over_socket("Authorization: Bearer " + key)
+    return {"sent_header": "Authorization: Bearer " + key, "bytes_sent": sent,
+            "source_file": "demo_credentials.py"}
+
+
+@app.get("/credential-logging")
+def credential_logging():
+    """SOURCE hardcoded -> SINK logging  =>  credential logging.
+
+    The same secret, same taint number, different sink: written to the
+    application log, where it is retained, shipped to a log aggregator, and
+    read by everyone with log access.
+
+    Try:  /credential-logging
+    EyalSec reports: `credential logging`. The logging hook inspects
+    record.msg and each of record.args, NOT record.getMessage(), so it sees
+    the secret even though this call never formats the string itself.
+    """
+    token = demo_credentials.GITHUB_TOKEN
+    log.warning("provisioning repository with token %s", token)  # <-- SINK
+    return {"logged_token": token, "sink": "logging.Logger.handle"}
+
+
+@app.get("/secret-disclosure")
+def secret_disclosure():
+    """SOURCE env -> SINK socket.sendall  =>  secret disclosure.
+
+    Environment variables are where deployments keep their secrets, so an env
+    value crossing a socket gets its own label rather than a generic send.
+
+    Try:  /secret-disclosure          (uses DEMO_SECRET, else HOME)
+    EyalSec reports: `secret disclosure` at the socket send. Arm with
+    ES2_MAKE_ENV_VULN. Worth knowing: with the env source armed, es-python
+    taints EVERY os.environ value, so on a real app this is a source that
+    wants a rule scoping it.
+    """
+    value = os.environ.get("DEMO_SECRET") or os.environ.get("HOME", "/home/demo")
+    sent = _send_over_socket("telemetry-env=" + value)
+    return {"value": value, "bytes_sent": sent}
+
+
+@app.get("/log-forging")
+def log_forging():
+    """SOURCE socket -> SINK logging  =>  log forging.
+
+    A newline in attacker-controlled data lets them write a whole extra log
+    line - forging an audit trail, or hiding in one.
+
+    Try:  /log-forging?user=alice
+          /log-forging?user=alice%0A2026-01-01 00:00:00 ADMIN login succeeded
+    EyalSec reports: `log forging` when a tainted message or arg carries CR
+    or LF.
+    """
+    user = request.args.get("user", "alice")
+    log.info("login for %s", user)  # <-- SINK
+    return {"user": user, "sink": "logging.Logger.handle"}
+
+
+# ===========================================================================
+# SOURCES ADDED AFTER THE FIRST RELEASE
+# Neither of these is a data source in the ordinary sense. `ssl-unverified`
+# reclassifies bytes the socket source already tainted; `shadow-import` is a
+# code-provenance finding that taints nothing at all and posts its own event.
+# ===========================================================================
+
+@app.get("/source/tls-unverified")
+def source_tls_unverified():
+    """SOURCE ssl-unverified -> SINK sqlite3.execute  =>  trusted-looking bytes.
+
+    TLS with certificate verification switched off. The connection is still
+    encrypted, so every "is it HTTPS?" check passes, but the peer was never
+    authenticated - anyone in the path can be the peer. es-python
+    reclassifies the decrypted plaintext so the data carries that fact all
+    the way to the sink.
+
+    Try:  /source/tls-unverified              (defaults to example.com:443)
+          /source/tls-unverified?host=...
+    EyalSec reports: origin `ssl-unverified:<host>`, or
+    `ssl-unverified:<host> (hostname-unchecked)` when the chain is verified
+    but check_hostname is off. This one folds under the SOCKET gate
+    (ES2_MAKE_SOCKET_VULN) and is the only new source alive in a socketonly
+    build. Needs outbound network; returns a plain error if there is none.
+    """
+    host = request.args.get("host", "example.com")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # <-- the peer is now unauthenticated
+    try:
+        with socket.create_connection((host, 443), timeout=5) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host) as tls:
+                tls.sendall(b"HEAD / HTTP/1.0\r\nHost: " + host.encode() + b"\r\n\r\n")
+                banner = tls.recv(256).decode("latin-1")  # <-- ssl-unverified source
+    except OSError as exc:
+        return {"host": host, "error": f"no outbound TLS from this box ({exc})",
+                "note": "the source still exists; this endpoint just needs egress"}
+    first = banner.splitlines()[0] if banner.splitlines() else ""
+    query = "SELECT id, name FROM users WHERE bio = '" + first + "'"
+    db = db_connect()
+    try:
+        rows = db.execute(query).fetchall()  # <-- SINK
+    finally:
+        db.close()
+    return {"host": host, "verified": False, "banner": first,
+            "query": query, "rows": rows}
+
+
+@app.get("/source/shadow-import")
+def source_shadow_import():
+    """SOURCE shadow-import -> an event at import time, no taint involved.
+
+    A file named after a standard-library module, sitting earlier on sys.path
+    than the real one. `import colorsys` then loads the attacker's file. This
+    is the dependency-confusion / path-shadowing primitive, and it is invisible
+    to the foreign-code detector because a file you wrote in your own cwd is
+    not writable by *another* user - so it gets its own emitter.
+
+    Try:  /source/shadow-import
+    EyalSec reports: `shadow import`, origin `shadow-import:<path>`, taint
+    number 13. Folds under the FOREIGN gate (ES2_MAKE_FOREIGN_VULN). It fires
+    only on a sys.modules MISS - once per module name per process, capped at
+    64 remembered names - so the event appears once even though this route
+    re-imports on every hit.
+    """
+    sys.modules.pop("colorsys", None)
+    if SHADOW_DIR not in sys.path:
+        sys.path.insert(0, SHADOW_DIR)
+    importlib.invalidate_caches()
+    mod = importlib.import_module("colorsys")  # <-- shadow-import
+    return {"module": "colorsys",
+            "loaded_from": getattr(mod, "__file__", "?"),
+            "real_stdlib_path": os.path.join(os.path.dirname(os.__file__), "colorsys.py"),
+            "is_shadow": getattr(mod, "EYALSEC_SHADOW", False)}
+
+
+# ===========================================================================
+# THIRD-PARTY ADAPTER SINKS
+# Non-stdlib libraries are covered by declarative adapters - one row each in
+# Lib/_eyalsec_hooks/registry.py, attached lazily through a sys.meta_path
+# finder. No vendored fork, no C change. 42 rows ship today; the ones below
+# are the ones that need no database server to reach.
+#
+# Each route degrades to a plain message when the library is not installed,
+# so the app runs with flask alone.
+# ===========================================================================
+
+def _optional(module_name, pip_name=None):
+    """Import an optional demo dependency, or explain how to get it."""
+    try:
+        return importlib.import_module(module_name), None
+    except ImportError:
+        return None, (f"{module_name} is not installed in this interpreter - "
+                      f"`pip install {pip_name or module_name}` to run this endpoint")
+
+
+@app.get("/adapter/jinja2")
+def adapter_jinja2():
+    """SOURCE socket -> SINK jinja2.Environment.from_string  =>  SSTI.
+
+    Server-side template injection: the attacker controls the TEMPLATE, not
+    the data substituted into it, so they get the template language's full
+    object graph and from there arbitrary execution.
+
+    Try:  /adapter/jinja2?template=hello {{ 7*7 }}
+          /adapter/jinja2?template={{ ''.__class__.__mro__[1].__subclasses__() }}
+    EyalSec reports: `ssti jinja2`.
+
+    NOTE: this route compiles the template and deliberately does NOT render
+    it. The adapter fires at from_string, so compiling is enough to show the
+    sink - and rendering would pull in markupsafe's C speedups, whose stock
+    PyUnicode layout is incompatible with es-python's string ABI and segfaults
+    at render. Any app meant to run under es-python should avoid C-extension
+    template engines. Same reason the landing page here is pure Python.
+    """
+    jinja2, missing = _optional("jinja2")
+    if missing:
+        return {"skipped": missing}
+    template = request.args.get("template", "hello {{ name }}")
+    jinja2.Environment().from_string(template)  # <-- SINK (compiled, not rendered)
+    return {"template": template, "compiled": True, "rendered": False,
+            "why_not_rendered": "markupsafe C speedups segfault under es-python"}
+
+
+@app.get("/adapter/mark-safe")
+def adapter_mark_safe():
+    """SOURCE socket -> SINK markupsafe.Markup  =>  XSS via escaping opt-out.
+
+    `Markup(x)` is Jinja's and Flask's "I promise this is safe HTML" wrapper,
+    and django.utils.safestring.mark_safe is the same shape. Wrapping
+    attacker data in it turns autoescaping off for exactly that value.
+
+    Try:  /adapter/mark-safe?html=<b>hi</b>
+          /adapter/mark-safe?html=<img src=x onerror=alert(1)>
+    EyalSec reports: `xss mark_safe`.
+    """
+    markupsafe, missing = _optional("markupsafe")
+    if missing:
+        return {"skipped": missing}
+    html = request.args.get("html", "<b>hi</b>")
+    marked = markupsafe.Markup(html)  # <-- SINK
+    return {"html": html, "marked_safe": str(marked), "escaped": False}
+
+
+@app.get("/adapter/yaml")
+def adapter_yaml():
+    """SOURCE socket -> SINK yaml.load (unsafe loader)  =>  deserialization RCE.
+
+    PyYAML's unsafe loaders construct arbitrary Python objects, so a YAML
+    document is a code-execution format unless you use safe_load.
+
+    Try:  /adapter/yaml?doc=a: 1
+          /adapter/yaml?doc=!!python/object/apply:os.system ["id"]
+    EyalSec reports: `yaml unsafe load`. The adapter's predicate checks the
+    loader, so a correct `yaml.safe_load` call is not reported.
+    """
+    yaml, missing = _optional("yaml", "PyYAML")
+    if missing:
+        return {"skipped": missing}
+    doc = request.args.get("doc", "a: 1")
+    loaded = yaml.load(doc, Loader=yaml.UnsafeLoader)  # <-- SINK
+    return {"doc": doc, "loaded": repr(loaded)}
+
+
+@app.get("/adapter/jwt")
+def adapter_jwt():
+    """SOURCE socket -> SINK jwt.decode  =>  unverified token accepted.
+
+    Decoding a JWT without verifying its signature means the attacker writes
+    the claims. `alg: none` is the same bug with a standards-blessed name.
+
+    Try:  /adapter/jwt?token=<any jwt>
+    EyalSec reports: `jwt unverified` (predicate: signature verification off)
+    or `jwt none alg` (predicate: the call accepts `alg: none`). Two adapter
+    rows, same patched method, different predicates.
+    """
+    jwt, missing = _optional("jwt", "PyJWT")
+    if missing:
+        return {"skipped": missing}
+    token = request.args.get(
+        "token",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiJndWVzdCIsInJvbGUiOiJhZG1pbiJ9.not-a-real-signature")
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})  # <-- SINK
+    except Exception as exc:
+        return {"token": token, "error": f"{exc.__class__.__name__}: {exc}"}
+    return {"token": token, "claims": claims, "signature_verified": False}
+
+
+@app.get("/adapter/sqlalchemy")
+def adapter_sqlalchemy():
+    """SOURCE socket -> SINK sqlalchemy.text  =>  SQL injection.
+
+    `text()` is SQLAlchemy's escape hatch out of the query builder. Whatever
+    goes in is sent as SQL, so building it by concatenation reintroduces
+    exactly the injection the ORM existed to prevent.
+
+    Try:  /adapter/sqlalchemy?name=alice
+          /adapter/sqlalchemy?name=x' OR '1'='1
+    EyalSec reports: `sql injection`. No database connection is needed - the
+    sink is the statement construction, which is where the bug already is.
+    """
+    sqlalchemy, missing = _optional("sqlalchemy", "SQLAlchemy")
+    if missing:
+        return {"skipped": missing}
+    name = request.args.get("name", "alice")
+    stmt = sqlalchemy.text("SELECT * FROM users WHERE name = '" + name + "'")  # <-- SINK
+    return {"name": name, "statement": str(stmt)}
+
+
+@app.get("/adapter/mongo")
+def adapter_mongo():
+    """SOURCE socket -> SINK pymongo Collection.find  =>  NoSQL injection.
+
+    MongoDB's `$where` takes a JavaScript expression, so attacker data landing
+    there is server-side code execution, not just a filter bypass.
+
+    Try:  /adapter/mongo?where=this.name == 'alice'
+          /adapter/mongo?where=1 == 1
+    EyalSec reports: `nosql mongodb`. The extractor walks the filter document
+    (bounded: depth 6, 512 nodes) and yields every $-prefixed key plus the
+    VALUE of $where / $expr / $function / $accumulator / $jsonSchema - so it
+    reports the dangerous operators, not every user-supplied field.
+    No server needed: the adapter fires when find() is called.
+    """
+    pymongo, missing = _optional("pymongo")
+    if missing:
+        return {"skipped": missing}
+    where = request.args.get("where", "this.name == 'alice'")
+    client = pymongo.MongoClient("mongodb://127.0.0.1:27017/",
+                                 serverSelectionTimeoutMS=200, connect=False)
+    cursor = client.demo.users.find({"$where": where})  # <-- SINK
+    try:
+        rows = [str(d) for d in cursor]
+        note = "a mongod answered"
+    except Exception as exc:
+        rows, note = [], f"no mongod reachable ({exc.__class__.__name__}) - sink already fired"
+    return {"where": where, "filter": {"$where": where}, "rows": rows, "note": note}
+
+
+@app.get("/adapter/redis")
+def adapter_redis():
+    """SOURCE socket -> SINK redis Redis.eval  =>  Lua script injection.
+
+    redis-py's ordinary commands are NOT a sink: RESP is length-prefixed, so a
+    value cannot escape its field, and storing user data in redis is the
+    normal case. `eval` is different - it ships a Lua program to the server.
+
+    Try:  /adapter/redis?script=return 1
+          /adapter/redis?script=return redis.call('KEYS', '*')
+    EyalSec reports: `nosql redis`. Worth reading as a coverage decision:
+    Redis.execute_command was deliberately dropped from the registry because
+    it fired on 100% of correct traffic. Only the genuine code-injection sink
+    is kept.
+    """
+    redis, missing = _optional("redis")
+    if missing:
+        return {"skipped": missing}
+    script = request.args.get("script", "return 1")
+    client = redis.Redis(host="127.0.0.1", port=6379, socket_connect_timeout=1)
+    try:
+        result = repr(client.eval(script, 0))  # <-- SINK
+        note = "a redis server answered"
+    except Exception as exc:
+        result, note = None, f"no redis reachable ({exc.__class__.__name__}) - sink already fired"
+    return {"script": script, "result": result, "note": note}
+
+
 # --------------------------------------------------------------------------- #
 # Catalog - single source of truth, also renders the landing page.
 # --------------------------------------------------------------------------- #
@@ -423,7 +882,11 @@ ENDPOINTS = [
      "socket", "urllib / socket connect", "SSRF", "Tainted host/URL at the outbound-connect sink"),
     ("Socket source (HTTP request data)", "POST", "/xxe", "curl --data-binary @doc.xml :5000/xxe",
      "socket", "ElementTree.fromstring", "XXE / XML injection", "Tainted document at the XML-parse sink"),
-    ("Socket source (HTTP request data)", "GET", "/redos", "/redos?pattern=(a+)+$&text=aaaaaaaaaaX",
+    # %2B, not a bare "+": in a query string "+" decodes to a space, which turns
+    # the catastrophic pattern into the harmless "(a ) $" and the demo into a
+    # no-op. Same reason the text below is spelled out rather than repeated.
+    ("Socket source (HTTP request data)", "GET", "/redos",
+     "/redos?pattern=(a%2B)%2B%24&text=aaaaaaaaaaaaaaaaaaaaaaX",
      "socket", "re.search", "ReDoS / regex injection", "Tainted pattern at the regex sink"),
     ("Socket source (HTTP request data)", "GET", "/csv", "/csv?row=name,=cmd|'/C calc'!A0",
      "socket", "csv.writer", "CSV / formula injection", "Tainted field at the csv sink"),
@@ -442,6 +905,53 @@ ENDPOINTS = [
      "env", "os.system", "Env-borne command injection", "Env source flows to the shell sink"),
     ("Other taint sources", "GET", "/source/foreign", "/source/foreign",
      "foreign-code", "module load", "Supply-chain / tampered code", "foreign-code:<path> at load time"),
+    ("Other taint sources", "GET", "/source/tls-unverified", "/source/tls-unverified",
+     "ssl-unverified", "sqlite3.execute", "Unauthenticated TLS peer",
+     "ssl-unverified:<host> - encrypted, but the peer was never verified"),
+    ("Other taint sources", "GET", "/source/shadow-import", "/source/shadow-import",
+     "shadow-import", "module load", "Stdlib shadowing / dependency confusion",
+     "shadow-import:<path> - a stdlib name loaded from outside the stdlib"),
+
+    # Same sink every time. The SOURCE picks the label - that is the point.
+    ("Composite findings (the source picks the label)", "GET", "/weak-random", "/weak-random",
+     "weak-random", "socket.sendall", "Predictable token",
+     "predictable token - a guessable secret leaving the process"),
+    ("Composite findings (the source picks the label)", "GET", "/credential-exfil", "/credential-exfil",
+     "hardcoded", "socket.sendall", "Credential exfiltration",
+     "credential exfiltration - a hardcoded key leaving the process"),
+    ("Composite findings (the source picks the label)", "GET", "/credential-logging", "/credential-logging",
+     "hardcoded", "logging", "Credential logging",
+     "credential logging - the same secret, written to the log instead"),
+    ("Composite findings (the source picks the label)", "GET", "/secret-disclosure", "/secret-disclosure",
+     "env", "socket.sendall", "Secret disclosure",
+     "secret disclosure - an environment value leaving the process"),
+    ("Composite findings (the source picks the label)", "GET", "/log-forging",
+     "/log-forging?user=alice%0AADMIN login ok",
+     "socket", "logging", "Log forging", "log forging - CR/LF in a tainted log message or arg"),
+
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/jinja2",
+     "/adapter/jinja2?template={{ 7*7 }}",
+     "socket", "jinja2 Environment.from_string", "SSTI", "ssti jinja2"),
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/mark-safe",
+     "/adapter/mark-safe?html=<img src=x onerror=alert(1)>",
+     "socket", "markupsafe.Markup", "XSS via escaping opt-out", "xss mark_safe"),
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/yaml",
+     "/adapter/yaml?doc=!!python/object/apply:os.system [\"id\"]",
+     "socket", "yaml.load (unsafe loader)", "Deserialization RCE", "yaml unsafe load"),
+    # No ?token= here on purpose: the route ships a sample JWT claiming
+    # role=admin, so the link works as a click. Pass your own to see it decode.
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/jwt",
+     "/adapter/jwt",
+     "socket", "jwt.decode", "Unverified token accepted", "jwt unverified / jwt none alg"),
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/sqlalchemy",
+     "/adapter/sqlalchemy?name=x' OR '1'='1",
+     "socket", "sqlalchemy.text", "SQL injection", "sql injection"),
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/mongo",
+     "/adapter/mongo?where=1 == 1",
+     "socket", "pymongo Collection.find", "NoSQL injection", "nosql mongodb"),
+    ("Third-party adapter sinks (optional libraries)", "GET", "/adapter/redis",
+     "/adapter/redis?script=return redis.call('KEYS', '*')",
+     "socket", "redis Redis.eval", "Lua script injection", "nosql redis"),
 ]
 
 # CLI demos (documented on the landing page; not HTTP routes).
@@ -484,6 +994,15 @@ CLI_DEMOS = [
      "secret -> 15 transformations -> socket.sendall",
      "The same taint number arrives at the sink after hex, base64, rot13, "
      "UTF-16, memoryview and container round-trips leave nothing to match on"),
+
+    ("Database driver sinks (command-line demo)",
+     "make_vuln, taint 1", "demos/driver_sinks.py",
+     "ES_DEMO_PG_DSN=... es-python demos/driver_sinks.py",
+     "tainted value -> psycopg2 / psycopg3 / mysqlclient / mariadb / "
+     "oracledb / python-ldap",
+     "The injectable statement is reported at each driver's own C or Cython "
+     "sink; the bound-parameter form beside it stays silent. Needs a "
+     "throwaway database - skips cleanly with nothing configured"),
 ]
 
 

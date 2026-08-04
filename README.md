@@ -36,7 +36,11 @@ That difference, with no code changes, is the entire product.
 
 ```bash
 # one dependency
-es-pip install -r requirements.txt        # or: pip install -r requirements.txt
+pip install -r requirements.txt
+
+# optional: the third-party adapter endpoints under /adapter/*. Without these
+# the app still runs and those routes report which library they would need.
+pip install PyYAML PyJWT SQLAlchemy pymongo redis
 
 # A) stock Python - silently vulnerable, no telemetry
 python3 app.py                            # http://127.0.0.1:5000/
@@ -88,12 +92,30 @@ for a local *dev* es-python build.
 | Command-line `argv` | `ES2_MAKE_ENV_VULN` | `demos/argv_demo.py` |
 | Foreign code (other-user-writable) | `ES2_MAKE_FOREIGN_VULN` | `GET /source/foreign`, `demos/uncatchable_plugin.py` |
 | `make_vuln(obj, n)` (an application-declared secret) | dev build: whenever the taint engine is active. Installed build: only when the machine config enables the `make_vuln` source | `demos/secret_exfil_server.py`, `demos/taint_gauntlet.py` |
+| Unverified TLS peer | folds under `ES2_MAKE_SOCKET_VULN` | `GET /source/tls-unverified` |
+| Weak PRNG output | `ES2_MAKE_WEAKRANDOM_VULN` | `GET /weak-random` |
+| Hardcoded credential | `ES2_MAKE_SECRET_VULN` | `GET /credential-exfil`, `GET /credential-logging` |
+| Stdlib shadowing | folds under `ES2_MAKE_FOREIGN_VULN` | `GET /source/shadow-import` |
+
+The last four are worth a note, because they are not shaped like the others:
+
+- **Unverified TLS peer** and **stdlib shadowing** have no gate of their own.
+  The first *reclassifies* bytes the socket source already tainted, so it rides
+  the socket gate; the second is a code-provenance finding that taints nothing
+  at all and posts its own event, so it rides the foreign gate.
+- **Weak PRNG** and **hardcoded credential** are flag/env only. Neither has a
+  dashboard machine-config category, so neither can be armed from the UI -
+  `--make-everything-vuln` does enable both. The hardcoded scan is the only
+  instrumentation layer with steady-state cost, which is why it stays off
+  unless asked for. Note the flag says `secret` while the source is named
+  `hardcoded`.
 
 **Sink classes** (where tainted data becomes an exploit): SQL execution, OS
 command / shell, `eval` / `exec`, dynamic import, deserialization
 (`pickle` / `marshal`), file-path open, outbound connect (SSRF), XML parse,
-regex, CSV, `str.format`, `os.mkfifo`, and native/FFI load. Every one has a
-dedicated endpoint below.
+regex, CSV, `str.format`, `os.mkfifo`, native/FFI load, logging, and the
+third-party template / NoSQL / JWT sinks. Every one has a dedicated endpoint
+below.
 
 ---
 
@@ -113,7 +135,7 @@ Socket source (HTTP request data is tainted the moment it is received):
 | `GET /path` | Path traversal | `open()` | `/path?file=../../../../etc/passwd` |
 | `GET /ssrf` | SSRF | `urllib` / connect | `/ssrf?url=http://169.254.169.254/` |
 | `POST /xxe` | XXE / XML injection | `ElementTree.fromstring` | `curl --data-binary @doc.xml :5000/xxe` |
-| `GET /redos` | ReDoS / regex injection | `re.search` | `/redos?pattern=(a+)+$&text=aaaaaaaaaaX` |
+| `GET /redos` | ReDoS / regex injection | `re.search` | `/redos?pattern=(a%2B)%2B%24&text=aaaaaaaaaaaaaaaaaaaaaaX` |
 | `GET /csv` | CSV / formula injection | `csv.writer` | `/csv?row=name,=cmd\|'/C calc'!A0` |
 | `GET /format` | Format-string leak | `str.format` | `/format?template={secrets[api_key]}` |
 | `GET /import` | Dynamic import injection | `importlib.import_module` | `/import?module=os` |
@@ -127,6 +149,53 @@ Other sources:
 | `GET /source/file` | File-borne SQL injection | `sample/tainted_input.txt` -> `sqlite3.execute` |
 | `GET /source/env` | Env-borne command injection | `$DEMO_INPUT` -> `os.system` |
 | `GET /source/foreign` | Supply-chain / tampered code | load a world-writable `.py` -> `foreign-code:<path>` |
+| `GET /source/tls-unverified` | Unauthenticated TLS peer | `CERT_NONE` TLS read -> `sqlite3.execute` |
+| `GET /source/shadow-import` | Stdlib shadowing | `import colorsys` resolves to a planted file -> `shadow-import:<path>` |
+
+**Composite findings** - same sink every time, and the *source* picks the
+label. This is the entire reason the weak-random and hardcoded sources exist: a
+secret sitting in a variable is not an incident, a secret leaving the process
+is, and the two look identical at the call site.
+
+| Endpoint | Reported as | Flow |
+|---|---|---|
+| `GET /weak-random` | `predictable token` | `random.getrandbits` -> `socket.sendall` |
+| `GET /credential-exfil` | `credential exfiltration` | hardcoded key -> `socket.sendall` |
+| `GET /credential-logging` | `credential logging` | the same key -> `logging` |
+| `GET /secret-disclosure` | `secret disclosure` | `os.environ` value -> `socket.sendall` |
+| `GET /log-forging` | `log forging` | CR/LF in request data -> `logging` |
+
+**Third-party adapter sinks.** Non-stdlib libraries are covered by declarative
+adapters - one row each in `_eyalsec_hooks/registry.py`, attached lazily
+through a `sys.meta_path` finder. No vendored fork, no C change; adding a
+library is a registry edit. 42 rows ship today. These are the ones reachable
+without a database server, and each route degrades to a plain "not installed"
+message so the app still runs on Flask alone.
+
+| Endpoint | Reported as | Sink |
+|---|---|---|
+| `GET /adapter/jinja2` | `ssti jinja2` | `Environment.from_string` |
+| `GET /adapter/mark-safe` | `xss mark_safe` | `markupsafe.Markup` |
+| `GET /adapter/yaml` | `yaml unsafe load` | `yaml.load` with an unsafe loader |
+| `GET /adapter/jwt` | `jwt unverified` / `jwt none alg` | `jwt.decode` |
+| `GET /adapter/sqlalchemy` | `sql injection` | `sqlalchemy.text` |
+| `GET /adapter/mongo` | `nosql mongodb` | `Collection.find` |
+| `GET /adapter/redis` | `nosql redis` | `Redis.eval` |
+
+Two of those rows record a deliberate coverage decision rather than a gap.
+`Redis.execute_command` was **dropped** from the registry because RESP is
+length-prefixed, so a value cannot escape its field and storing user data in
+redis is the normal case - it fired on 100% of correct traffic. Only `eval`,
+which ships a Lua program to the server, is a genuine code-injection sink. The
+mongo extractor is narrowed the same way: it walks the filter document
+(bounded to depth 6 and 512 nodes) and yields only `$`-prefixed keys plus the
+*value* of `$where` / `$expr` / `$function` / `$accumulator` / `$jsonSchema`,
+so an ordinary user-supplied field is not an event.
+
+`/adapter/jinja2` compiles the template and deliberately does **not** render
+it. The adapter fires at `from_string`, so compiling is enough to reach the
+sink - and rendering would pull in `markupsafe`'s C speedups, which segfault
+under es-python (see the note at the end of this file).
 
 Process-launch sources (CLI demos, not HTTP):
 
@@ -327,6 +396,40 @@ real database and the same event fires:
 | MySQL | `mysqlclient` | `_mysql` query (C) |
 | MariaDB | `mariadb` | `MrdbCursor_parse` (C) |
 | Oracle | `oracledb` | `BaseCursorImpl._prepare` (Cython) |
+| LDAP | `python-ldap` | `l_ldap_search_ext` (C) |
+
+`demos/driver_sinks.py` exercises all of them. It runs each attacker value
+twice per database - once concatenated into the statement, once as a bound
+parameter - so you can watch the injectable form get reported and the correct
+form stay silent:
+
+```bash
+export ES_DEMO_PG_DSN='postgresql://user:pass@127.0.0.1:5432/scratch'
+es-python demos/driver_sinks.py
+```
+
+Anything you do not configure is skipped and reported as skipped, so the script
+is safe to run before you have set up any database at all.
+
+**LDAP is the honest exception, and it is deliberate.** LDAP has no
+bind-parameter mechanism. The correct way to build a filter is
+`ldap.filter.filter_format`, which *escapes* the value - but the escaped value
+is still spliced into the filter string, so it is still tainted and the sink
+still fires. The claim this sink makes is *"attacker data reached the LDAP
+search filter"*, not *"confirmed injection"*: triage on whether the filter was
+escaped, and do not treat the event alone as a finding. The sink covers the
+filter argument only, never the base DN and never the attribute list - firing
+on a base DN would fire on the extremely common "base DN built from a tenant
+id" pattern, and DN injection is a distinct class that would need its own
+label.
+
+Why these are vendored forks rather than registry adapters: `python-ldap` talks
+to the directory through OpenLDAP's own C socket, so its traffic never crosses
+Python's `socket` module and the C send/connect sinks never see it - and
+`_ldap.LDAPObject` is a statically-defined C extension type, which the adapter
+registry cannot attribute-patch. The same constraint is why SQL Server
+(`pymssql`, `pyodbc`) is **not** covered yet: both are statically-defined
+extension types, so they need a vendored fork too.
 
 ---
 
@@ -347,6 +450,7 @@ real database and the same event fires:
 
 ```
 app.py                        all HTTP endpoints, each commented SOURCE -> SINK -> report
+demo_credentials.py           fake hardcoded secrets for the `hardcoded` taint source
 landing.py                    the landing-page catalog served at /, rendered in pure Python
 run-eyalsec.sh                launch the web app under a dev es-python, every source armed
 run-demos.sh                  run the three CLI demos twice each, with and without a raise
@@ -357,10 +461,30 @@ demos/
   secret_exfil_server.py      a secret that cannot leave the process
   uncatchable_plugin.py       the code load nothing else can see
   taint_gauntlet.py           taint through 15 transformations
+  driver_sinks.py             SQL / LDAP injection through the bundled DB drivers
   es_compat.py                inert stand-ins so every demo also runs on stock CPython
 sample/                       fixture files for the file-read and path-traversal demos
 requirements.txt              Flask (the only dependency)
 ```
+
+`demo_credentials.py` is a separate module rather than a constant in `app.py`,
+and that is not arbitrary. The `hardcoded` source is AST-driven and hooks
+exactly one place, the `finally:` block of the builtin `compile()`. Two
+consequences follow, and neither is a bug:
+
+1. `python app.py` runs the top-level script through `PyRun_FileExFlags`, which
+   never calls the builtin `compile()`. A literal in the main script is
+   therefore **not** scanned. An imported module is, because the import
+   machinery compiles it with the builtin.
+2. A `__pycache__` hit performs no compile at all, so the literals are seen on
+   the first uncached import only. `rm -rf __pycache__` and restart to watch it
+   fire again.
+
+The file also carries two values that are deliberately **not** matched, sitting
+next to the ones that are: a passphrase (the token-shape filter rejects any
+value containing whitespace, so `"correct horse battery staple"` is missed by
+design - matching it would drag in every English sentence assigned to a
+variable whose name ends in `password`) and a placeholder like `changeme`.
 
 The `demos/` scripts import `es_compat`, which supplies no-op versions of
 `make_vuln` / `check_vuln` / `get_taint` when the interpreter has no taint
