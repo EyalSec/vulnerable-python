@@ -33,12 +33,16 @@ Each route demonstrates exactly one (taint source -> sink) pair. See the
 ENDPOINTS catalog at the bottom, which also drives the landing page at "/".
 """
 
+import builtins
 import csv
 import ctypes
 import importlib
+import importlib.machinery
+import importlib.util
 import io
 import logging
 import marshal
+import mmap
 import os
 import pickle
 import random
@@ -55,6 +59,7 @@ import xml.etree.ElementTree as ET
 from flask import Flask, Response, request
 
 import demo_credentials
+import foreign_lab
 import landing
 
 app = Flask(__name__)
@@ -665,6 +670,638 @@ def source_shadow_import():
 
 
 # ===========================================================================
+# THE FOREIGN GATE, IN FULL  (ES2_MAKE_FOREIGN_VULN / --make-foreign-vuln)
+#
+# Every other source answers "is this data attacker-controlled?". This one
+# answers "could a user other than me have written this?" - a question about
+# PROVENANCE, which is why it fires on code that no attacker has touched yet
+# and on data that no request has carried.
+#
+# A file is foreign when any of three rules matches it:
+#
+#     owned by another (non-root) user
+#     world-writable
+#     group-writable, and the group has another real member
+#
+# Reads additionally accept a fourth: the immediate parent directory lets
+# another user rename or replace the file. The sticky bit is honoured, so an
+# ordinary file you own in /tmp is NOT foreign - see /foreign/controls.
+#
+# Root-owned files are trusted on purpose. Root can replace anything on the
+# box, so treating root-owned code as untrusted would report the whole stdlib
+# on every import and the signal would be worth nothing.
+#
+# The gate then drives three distinct behaviours, one per group of routes
+# below: code-load events, data taint, and provenance recovery for exec/eval/
+# compile of a bare string. `shadow-import` (/source/shadow-import, above)
+# folds under this same gate.
+#
+# ONE EVENT PER PATH PER PROCESS. Each route uses its own fixture file for
+# that reason; a repeat hit on the same route is deliberately silent until you
+# restart the app.
+# ===========================================================================
+
+FOREIGN = foreign_lab.build()
+
+# es-python builtins, with inert stand-ins so this file still runs on stock
+# CPython. Same trick as demos/es_compat.py, kept local so app.py imports
+# nothing from demos/.
+_make_vuln = getattr(builtins, "make_vuln", lambda obj, taint=None: obj)
+_get_taint = getattr(builtins, "get_taint", lambda obj: None)
+
+
+def _import_by_name(module_name, directory):
+    """Import `module_name` from `directory` through a genuine sys.path entry.
+
+    Forced to be a real import each time (sys.modules purge + invalidated
+    caches) so the loader actually opens the file - a cached module performs no
+    load and therefore produces no event.
+    """
+    sys.modules.pop(module_name, None)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    importlib.invalidate_caches()
+    return importlib.import_module(module_name)
+
+
+def _foreign_report(path, **extra):
+    """Standard body: the path, the rule-by-rule verdict, and the route's data."""
+    body = {"loaded_from": path, "verdict": foreign_lab.verdict(path)}
+    body.update(extra)
+    return body
+
+
+# --------------------------------------------------------------------------- #
+# 1. CODE LOADS. No taint, no sink, no data flow - the load is the finding.
+# --------------------------------------------------------------------------- #
+
+@app.get("/foreign/world-writable")
+def foreign_world_writable():
+    """SOURCE foreign-code -> `import` of a world-writable module.
+
+    Mode 0666 on a file that is on sys.path. Any local user - a compromised
+    service account, a container sharing the volume, a CI runner - can rewrite
+    it between two runs of this app, and the next import executes whatever they
+    left behind. The file's CONTENT is innocent right now, which is exactly why
+    a scanner reading it finds nothing.
+
+    Try:  /foreign/world-writable
+    EyalSec reports: `foreign-code:<path>`, origin taint number 3, at the
+    import. Under ES2_RAISE the import is aborted with a RuntimeError.
+    """
+    mod = _import_by_name("eyalsec_ww_module", FOREIGN["import_dir"])
+    return _foreign_report(FOREIGN["ww_module"],
+                           rule="world-writable (o+w)",
+                           message=mod.MESSAGE)
+
+
+@app.get("/foreign/other-user")
+def foreign_other_user():
+    """SOURCE foreign-code -> `import` of a module OWNED BY ANOTHER USER.
+
+    The headline case, and the one that needs ./setup-foreign.sh (an
+    unprivileged process cannot create a file it does not own). Note the mode
+    is 0644: I cannot write this file at all. It is untrusted because the user
+    who CAN write it is not me - which is what "supply chain" means once the
+    package is already on disk.
+
+    Try:  ./setup-foreign.sh   then   /foreign/other-user
+    EyalSec reports: `foreign-code:/var/tmp/eyalsec-foreign/other_user_module.py`,
+    with the owning uid and mode in the event body.
+    """
+    path = foreign_lab.sudo_fixture("other_user_module.py")
+    if path is None:
+        return foreign_lab.not_set_up("other_user_module.py",
+                                      "a Python module owned by a different user")
+    mod = _import_by_name("other_user_module", foreign_lab.SUDO_DIR)
+    return _foreign_report(path,
+                           rule="owned by another user (uid mismatch, not root)",
+                           message=mod.MESSAGE)
+
+
+@app.get("/foreign/group-writable")
+def foreign_group_writable():
+    """SOURCE foreign-code -> `import` of a GROUP-WRITABLE module.
+
+    Mine, mode 0664, in a group somebody else belongs to. The subtlety is that
+    the mode bits alone decide nothing: es-python resolves the group's real
+    membership - including users whose PRIMARY group it is, who never appear in
+    the group entry - and stays silent when the group is a private one-member
+    group, which is what most distributions hand out. So this rule fires on
+    genuinely shared write access and not on the default layout of a home
+    directory.
+
+    Try:  ./setup-foreign.sh   then   /foreign/group-writable
+    EyalSec reports: `foreign-code:<path>` - or nothing at all if the group
+    turns out to have exactly one member, which is a correct answer.
+    """
+    path = FOREIGN.get("group_module") or foreign_lab.sudo_fixture("group_writable_module.py")
+    if path is None:
+        gid, gname, others = foreign_lab.usable_shared_group()
+        return {"status": "no usable group on this box",
+                "detail": "every group this process belongs to has exactly one "
+                          "real member, so a group-writable file here would be "
+                          "private and es-python would correctly say nothing",
+                "how": foreign_lab.SETUP_HINT}
+    directory, name = os.path.split(path)
+    mod = _import_by_name(name[:-3], directory)
+    return _foreign_report(path,
+                           rule="group-writable and the group has another member",
+                           message=mod.MESSAGE)
+
+
+@app.get("/foreign/pyc")
+def foreign_pyc():
+    """SOURCE foreign-code -> loading a world-writable `.pyc`, with no source.
+
+    The same attack shipped as bytecode. There is no `.py` beside it, so there
+    is nothing for a source scanner, a linter or a code review to read; the
+    file is a marshalled code object that runs on import like any other module.
+    Provenance is all that is left to judge it by, and provenance is what this
+    detector uses.
+
+    Try:  /foreign/pyc
+    EyalSec reports: `foreign-code:<path>.pyc` at the bytecode load. The
+    importlib hook covers the sourceless path as well as the source one.
+    """
+    import py_compile
+
+    py_compile.compile(FOREIGN["ww_pyc_source"], cfile=FOREIGN["ww_pyc"],
+                       doraise=True)
+    os.chmod(FOREIGN["ww_pyc"], 0o666)
+
+    name = "eyalsec_ww_bytecode"
+    sys.modules.pop(name, None)
+    loader = importlib.machinery.SourcelessFileLoader(name, FOREIGN["ww_pyc"])
+    spec = importlib.util.spec_from_file_location(name, FOREIGN["ww_pyc"],
+                                                  loader=loader)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # <-- foreign-code load, bytecode only
+    return _foreign_report(FOREIGN["ww_pyc"],
+                           rule="world-writable .pyc, no source on disk",
+                           message=mod.MESSAGE)
+
+
+@app.get("/foreign/compile")
+def foreign_compile():
+    """SOURCE foreign-code -> `compile(src, path, "exec")` with a foreign path.
+
+    An app that implements its own plugin loading does not call `import`; it
+    reads a file and compiles it. The builtin `compile()` is instrumented for
+    exactly that, on the FILENAME argument, so a hand-rolled loader is covered
+    the same way importlib is.
+
+    Try:  /foreign/compile
+    EyalSec reports: `compile`, origin `foreign-code:<path>`. The source string
+    is itself tainted (it was read from a foreign file), so it would separately
+    qualify as an untrusted code load - but the path-based event has already
+    claimed this load, so there is no duplicate `compile (untrusted code)`
+    event. You will still see the ordinary tainted-value event for the string
+    reaching compile, which is a different finding about a different fact.
+    """
+    path = FOREIGN["ww_compile"]
+    with open(path) as fh:
+        src = fh.read()
+    code = compile(src, path, "exec")  # <-- SINK: foreign path at compile()
+    ns = {}
+    exec(code, ns)
+    return _foreign_report(path,
+                           rule="world-writable file named as compile()'s filename",
+                           compiled_names=[k for k in ns if not k.startswith("__")],
+                           value=ns.get("COMPILED"))
+
+
+@app.get("/foreign/exec-file")
+def foreign_exec_file():
+    """SOURCE foreign-code -> `exec(open(path).read())`, filename `<string>`.
+
+    The load with no filename at all. The bytes were read as DATA, so by the
+    time they reach exec the interpreter is looking at an anonymous string and
+    every path-based control - audit hooks, allowlists, EDR file rules, a SAST
+    pass over the repo - has nothing to key on. es-python walks the string's
+    taint chain back to the read that produced it and reports the original
+    path, so this lands as the same `foreign-code:<path>` event that a direct
+    import would have produced.
+
+    Try:  /foreign/exec-file
+          /foreign/exec-file?sink=eval
+          /foreign/exec-file?sink=compile
+    EyalSec reports: `exec (foreign code)` / `eval (foreign code)` /
+    `compile (foreign code)`. This raise is SYNCHRONOUS under ES2_RAISE - the
+    source is never compiled and never runs, unlike the sink-side raises
+    elsewhere in this app, which fire at the sink after the fact.
+    See demos/uncatchable_plugin.py for the same idea as a CLI demo.
+    """
+    sink = request.args.get("sink", "exec")
+    path = FOREIGN["ww_source"]
+    with open(path) as fh:
+        src = fh.read()  # <-- tainted: the file is foreign
+    ns = {}
+    if sink == "eval":
+        result = eval(src.split("=", 1)[1].strip())  # <-- SINK
+    elif sink == "compile":
+        result = repr(compile(src, "<string>", "exec"))  # <-- SINK
+    else:
+        exec(src, ns)  # <-- SINK
+        result = ns.get("RESULT")
+    return _foreign_report(path, sink=sink, filename_seen_by_python="<string>",
+                           result=result,
+                           note="the path in the event was recovered from the "
+                                "taint chain, not from the call")
+
+
+# --------------------------------------------------------------------------- #
+# 2. DATA TAINT. The file gate taints EVERY file read on the box; the foreign
+#    gate taints only the reads another user could have controlled - which is
+#    what makes it something you can leave armed in production.
+# --------------------------------------------------------------------------- #
+
+@app.get("/foreign/data/read")
+def foreign_data_read():
+    """SOURCE foreign file read -> SINK sqlite3.execute  =>  SQL injection.
+
+    Same shape as /source/file, one gate down: this fires with
+    ES2_MAKE_FILE_VULN switched OFF, because the file is world-writable and so
+    its contents are attacker-controlled by definition. Arm only
+    ES2_MAKE_FOREIGN_VULN and compare the two routes.
+
+    Try:  /foreign/data/read
+    EyalSec reports: a tainted SQL statement at the sqlite3 sink, origin the
+    file's path.
+    """
+    path = FOREIGN["ww_sql"]
+    with open(path) as fh:
+        value = fh.read().strip()  # <-- tainted by the foreign gate alone
+    query = "SELECT id, name FROM users WHERE name = '" + value + "'"
+    db = db_connect()
+    try:
+        rows = db.execute(query).fetchall()  # <-- SINK
+    finally:
+        db.close()
+    return _foreign_report(path, value=value, query=query, rows=rows)
+
+
+@app.get("/foreign/data/readlines")
+def foreign_data_readlines():
+    """SOURCE foreign file read -> SINK os.system  =>  command injection.
+
+    `readlines()` rather than `read()`. It is a different C path with its own
+    taint marking and its own origin stamping, so it gets its own route: a
+    per-line read used to reach the sink with the origin missing, and the
+    dashboard would attribute the finding to the line of code instead of to the
+    file.
+
+    Try:  /foreign/data/readlines
+    EyalSec reports: a tainted command string at the shell sink, origin the
+    hosts file.
+    """
+    path = FOREIGN["ww_lines"]
+    with open(path) as fh:
+        lines = fh.readlines()  # <-- each line tainted
+    target = lines[-1].strip() if lines else "127.0.0.1"
+    cmd = "ping -c 1 " + target
+    code = os.system(cmd)  # <-- SINK
+    return _foreign_report(path, lines=[l.rstrip("\n") for l in lines],
+                           ran=cmd, exit_code=code)
+
+
+@app.get("/foreign/data/os-read")
+def foreign_data_os_read():
+    """SOURCE foreign fd -> SINK subprocess(shell=True)  =>  command injection.
+
+    Raw `os.open` + `os.read`, with no file object anywhere. The verdict is
+    made on the file DESCRIPTOR (`fstat`), which is why this still works when
+    the code never touches a path after the open - and why a socketonly build
+    cannot do it: that variant compiles the file/foreign instrumentation out.
+
+    Try:  /foreign/data/os-read
+    EyalSec reports: a tainted argument at the subprocess sink.
+    """
+    path = FOREIGN["ww_cmd"]
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        raw = os.read(fd, 4096)  # <-- tainted: the fd is foreign
+    finally:
+        os.close(fd)
+    target = raw.decode().strip()
+    out = subprocess.run("ping -c 1 " + target, shell=True,  # <-- SINK
+                         capture_output=True, text=True)
+    return _foreign_report(path, target=target, exit_code=out.returncode,
+                           stdout=out.stdout[-400:])
+
+
+@app.get("/foreign/data/mmap")
+def foreign_data_mmap():
+    """SOURCE foreign mmap -> SINK sqlite3.execute  =>  SQL injection.
+
+    A memory-mapped foreign file. There is no `read()` call at all - the bytes
+    arrive by page fault - so instrumenting the read APIs would miss this
+    entirely. The mmap object records the foreignness of its fd at map time and
+    taints every slice taken from it.
+
+    Try:  /foreign/data/mmap
+    EyalSec reports: a tainted SQL statement at the sqlite3 sink.
+    """
+    path = FOREIGN["ww_mmap"]
+    with open(path, "rb") as fh:
+        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            value = mm[:].decode().strip()  # <-- tainted through the mapping
+    query = "SELECT id, name FROM users WHERE name = '" + value + "'"
+    db = db_connect()
+    try:
+        rows = db.execute(query).fetchall()  # <-- SINK
+    finally:
+        db.close()
+    return _foreign_report(path, value=value, query=query, rows=rows)
+
+
+@app.get("/foreign/data/parent-dir")
+def foreign_data_parent_dir():
+    """SOURCE foreign-by-parent-directory -> SINK sqlite3.execute.
+
+    The file is mine and mode 0600 - nobody else can open it. It is still
+    untrusted, because its directory is world-writable and NOT sticky, so any
+    user can rename it away and drop their own file in its place. Permissions
+    on a file mean nothing if somebody else controls the name that points at
+    it.
+
+    This rule applies to READS only. A code load looks at the file's own bits,
+    so importing this same file produces no event - the two answers differ on
+    purpose, and /foreign/controls shows the pair.
+
+    Try:  /foreign/data/parent-dir
+    EyalSec reports: a tainted SQL statement, origin the swappable file.
+    """
+    path = FOREIGN["swappable_data"]
+    with open(path) as fh:
+        value = fh.read().strip()  # <-- tainted via the parent-directory rule
+    query = "SELECT id, name FROM users WHERE name = '" + value + "'"
+    db = db_connect()
+    try:
+        rows = db.execute(query).fetchall()  # <-- SINK
+    finally:
+        db.close()
+    return _foreign_report(path, value=value, query=query, rows=rows)
+
+
+@app.get("/foreign/data/other-user")
+def foreign_data_other_user():
+    """SOURCE file owned by another user -> SINK sqlite3.execute.
+
+    Config files, drop directories, spool files and shared caches are read by
+    processes that never wrote them. A file owned by another account is the
+    plainest form of that, and needs no permission mistake to be dangerous.
+
+    Try:  ./setup-foreign.sh   then   /foreign/data/other-user
+    EyalSec reports: a tainted SQL statement, origin the other user's file.
+    """
+    path = foreign_lab.sudo_fixture("other_user_query.txt")
+    if path is None:
+        return foreign_lab.not_set_up("other_user_query.txt",
+                                      "a data file owned by a different user")
+    with open(path) as fh:
+        value = fh.read().strip()  # <-- tainted: owner is not me
+    query = "SELECT id, name FROM users WHERE name = '" + value + "'"
+    db = db_connect()
+    try:
+        rows = db.execute(query).fetchall()  # <-- SINK
+    finally:
+        db.close()
+    return _foreign_report(path, value=value, query=query, rows=rows)
+
+
+@app.get("/foreign/data/fifo")
+def foreign_data_fifo():
+    """SOURCE foreign FIFO -> SINK os.system  =>  command injection.
+
+    A named pipe created by another user. There is no file content to inspect,
+    no hash to pin, no mode bit that helps - the bytes only exist while they
+    are in flight, and the only durable fact about them is who made the pipe.
+    es-python judges non-regular files (FIFOs, character devices, pipes) on
+    exactly that.
+
+    The route opens the FIFO read-write so it can write and read back in one
+    request; without that, opening a FIFO for reading blocks until a writer
+    shows up.
+
+    Try:  ./setup-foreign.sh   then   /foreign/data/fifo
+    EyalSec reports: a tainted command string at the shell sink.
+    """
+    path = foreign_lab.sudo_fixture("other_user.fifo")
+    if path is None:
+        return foreign_lab.not_set_up("other_user.fifo",
+                                      "a FIFO created by a different user")
+    fd = os.open(path, os.O_RDWR)
+    try:
+        os.write(fd, b"127.0.0.1; id\n")
+        raw = os.read(fd, 4096)  # <-- tainted: the FIFO's creator is not me
+    finally:
+        os.close(fd)
+    target = raw.decode().strip()
+    cmd = "ping -c 1 " + target
+    code = os.system(cmd)  # <-- SINK
+    return _foreign_report(path, target=target, ran=cmd, exit_code=code)
+
+
+# --------------------------------------------------------------------------- #
+# 3. UNTRUSTED CODE LOADS. exec/eval/compile of a bare string, where the
+#    filename is `<string>` and provenance can only come from the taint chain.
+#    A foreign-writable origin reports as `foreign-code:`; every other source
+#    reports as `untrusted-code:<origin>`, so one rule covers the whole family.
+# --------------------------------------------------------------------------- #
+
+@app.get("/foreign/untrusted/socket")
+def foreign_untrusted_socket():
+    """SOURCE socket -> SINK exec  =>  `untrusted-code:socket:<ip>:<port>`.
+
+    HTTP request data compiled and run. /exec already shows this as a code
+    injection at the exec sink; what the foreign gate adds is a second, more
+    specific finding that names the ORIGIN of the code - the connection it
+    arrived on - rather than just the sink it reached.
+
+    Try:  /foreign/untrusted/socket?code=x=6*7
+          /foreign/untrusted/socket?code=6*7&sink=eval
+          /foreign/untrusted/socket?code=__import__('os').system('id')
+    EyalSec reports: `exec (untrusted code)` / `eval (untrusted code)` /
+    `compile (untrusted code)`. The origin names the read the bytes came from:
+    `untrusted-code:socket:<local>-<peer>` for code read straight off a socket,
+    and `untrusted-code:fd:<n>` here, because werkzeug parses the request
+    through a file wrapper over the connection rather than calling recv itself.
+    Blocked synchronously under ES2_RAISE - the string is never compiled.
+    """
+    code_str = request.args.get("code", "x = 6 * 7")
+    sink = request.args.get("sink", "exec")
+    ns = {}
+    if sink == "eval":
+        result = eval(code_str)                            # <-- SINK
+    elif sink == "compile":
+        result = repr(compile(code_str, "<string>", "exec"))  # <-- SINK
+    else:
+        exec(code_str, ns)                                 # <-- SINK
+        result = {k: repr(v) for k, v in ns.items() if not k.startswith("__")}
+    return {"code": code_str, "sink": sink, "result": result,
+            "origin_reported": "untrusted-code:socket:<peer ip>:<port>"}
+
+
+@app.get("/foreign/untrusted/env")
+def foreign_untrusted_env():
+    """SOURCE env var -> SINK exec  =>  `untrusted-code:<env value>`.
+
+    The same detector, a different origin: code taken from the environment. In
+    a container the environment is set by whoever wrote the manifest, which is
+    frequently not whoever wrote the app.
+
+    Try:  DEMO_CODE='x = 1' in the environment, then /foreign/untrusted/env
+          (run-eyalsec.sh sets one for you)
+    EyalSec reports: `exec (untrusted code)`, origin `untrusted-code:env` - the
+    origin names the SOURCE, not the value, so a rule can be written against it
+    without knowing what the attacker sent. Arm ES2_MAKE_ENV_VULN as well as
+    ES2_MAKE_FOREIGN_VULN: the untrusted-code detector reports the load, and
+    the env gate is what makes the string untrusted in the first place.
+    """
+    code_str = os.environ.get("DEMO_CODE", "x = 6 * 7")  # <-- env source
+    ns = {}
+    exec(code_str, ns)  # <-- SINK
+    return {"env_DEMO_CODE": code_str,
+            "result": {k: repr(v) for k, v in ns.items() if not k.startswith("__")},
+            "note": "needs ES2_MAKE_ENV_VULN too - foreign mode reports the "
+                    "load, the env gate is what makes the string untrusted"}
+
+
+@app.get("/foreign/untrusted/tainted")
+def foreign_untrusted_tainted():
+    """SOURCE make_vuln -> SINK exec  =>  a source-scoped untrusted code load.
+
+    `make_vuln(value, n)` tags a value with taint number n, which is how you
+    mark something the interpreter has no way to know is untrusted - a field
+    out of your own database, a message off a queue, a template from a CMS. The
+    code load is reported with that number, so a dashboard rule can be scoped
+    to this one source and raise on it while everything else stays in observe
+    mode.
+
+    Try:  /foreign/untrusted/tainted
+          /foreign/untrusted/tainted?n=7&code=6*7
+    EyalSec reports: `exec (untrusted code)`, origin `untrusted-code:make_vuln`,
+    carrying taint number n. Inert on stock CPython, where make_vuln is a
+    no-op stand-in.
+    """
+    n = int(request.args.get("n", "7"))
+    code_str = _make_vuln(request.args.get("code", "x = 6 * 7"), n)
+    ns = {}
+    exec(code_str, ns)  # <-- SINK
+    return {"code": code_str, "taint_number": _get_taint(code_str),
+            "result": {k: repr(v) for k, v in ns.items() if not k.startswith("__")}}
+
+
+# --------------------------------------------------------------------------- #
+# 4. THE SILENT HALF. A detector is only worth having if it also knows when to
+#    say nothing, and every case below is one somebody would reasonably expect
+#    to fire.
+# --------------------------------------------------------------------------- #
+
+@app.get("/foreign/controls")
+def foreign_controls():
+    """Six loads and reads that must produce NO foreign-code event.
+
+    Fully silent - nothing at all is reported:
+
+      root-owned module      root can replace anything anyway; flagging root
+                             would report the entire standard library.
+      my own private file    the ordinary case - mode 0600, my uid.
+      my own private module  the same file, imported instead of read.
+      sticky-dir file        mine, in /tmp: world-writable but STICKY, so no
+                             other user may rename it. This one is the reason
+                             the parent-directory rule has a sticky-bit
+                             exception at all; without it every temp file on
+                             the box reads as foreign.
+
+    No foreign-code event, but not silent either - and the difference is the
+    interesting part:
+
+      allowlisted module     world-writable, but under a prefix the operator
+                             put in ES2_FOREIGN_CODE_ALLOW. The allowlist
+                             exempts the CODE LOAD; the file is still
+                             world-writable, so importlib's read of its source
+                             is still tainted and the ordinary compile-sink
+                             event still fires. Unset the variable and the
+                             foreign-code event comes back on top.
+      swappable module       mode 0600 in a world-writable directory. Loading
+                             it as CODE is not reported: the parent-directory
+                             rule applies to READS. The read importlib does to
+                             get the source is a read, so that produces its own
+                             tainted-value event - which is exactly the fact
+                             /foreign/data/parent-dir demonstrates.
+
+    Try:  /foreign/controls
+    EyalSec reports: no `foreign-code:` origin from any of the six. Any event
+    with one is a false positive worth telling us about.
+    """
+    results = []
+
+    root_mod = foreign_lab.sudo_fixture("root_owned_module.py")
+    if root_mod:
+        _import_by_name("root_owned_module", foreign_lab.SUDO_DIR)
+        results.append({"case": "root-owned module", "path": root_mod,
+                        "verdict": foreign_lab.verdict(root_mod)})
+    else:
+        results.append({"case": "root-owned module", "status": "not set up",
+                        "how": foreign_lab.SETUP_HINT})
+
+    with open(FOREIGN["private_data"]) as fh:
+        fh.read()
+    results.append({"case": "my own private file (0600 in a 0700 dir)",
+                    "path": FOREIGN["private_data"],
+                    "verdict": foreign_lab.verdict(FOREIGN["private_data"])})
+
+    _import_by_name("eyalsec_private_mod", FOREIGN["shield_dir"])
+    results.append({"case": "my own private module",
+                    "path": FOREIGN["private_module"],
+                    "verdict": foreign_lab.verdict(FOREIGN["private_module"])})
+
+    with open(FOREIGN["sticky_data"]) as fh:
+        fh.read()
+    results.append({"case": "my file in a sticky world-writable dir (/tmp)",
+                    "path": FOREIGN["sticky_data"],
+                    "verdict": foreign_lab.verdict(FOREIGN["sticky_data"])})
+
+    _import_by_name("eyalsec_trusted_mod", FOREIGN["allow_dir"])
+    results.append({"case": "world-writable but allowlisted",
+                    "path": FOREIGN["allowlisted_module"],
+                    "allowlist": os.environ.get("ES2_FOREIGN_CODE_ALLOW", "(unset)"),
+                    "silent_only_if": f"ES2_FOREIGN_CODE_ALLOW covers "
+                                      f"{FOREIGN['allow_dir']}",
+                    "verdict": foreign_lab.verdict(FOREIGN["allowlisted_module"])})
+
+    _import_by_name("eyalsec_swappable_mod", FOREIGN["open_dir"])
+    results.append({"case": "0600 module in a world-writable dir (code load, "
+                            "not a read)",
+                    "path": FOREIGN["swappable_module"],
+                    "verdict": foreign_lab.verdict(FOREIGN["swappable_module"])})
+
+    return {"expected_foreign_code_events": 0,
+            "note": "the last two entries still produce an ordinary "
+                    "tainted-value event for the source read importlib "
+                    "performs - see the docstring; what none of them produce "
+                    "is a foreign-code load event",
+            "controls": results}
+
+
+@app.get("/foreign/explain")
+def foreign_explain():
+    """Not a vulnerability - the predicate, run against any path you name.
+
+    Shows which of the four rules matches, and the two verdicts (code loads
+    consult the file's own bits; reads also accept the parent directory).
+
+    Try:  /foreign/explain?path=/etc/passwd
+          /foreign/explain?path=/tmp
+          /foreign/explain?path=<any file on the box>
+    """
+    path = request.args.get("path", FOREIGN["ww_module"])
+    return foreign_lab.verdict(path)
+
+
+# ===========================================================================
 # THIRD-PARTY ADAPTER SINKS
 # Non-stdlib libraries are covered by declarative adapters - one row each in
 # Lib/_eyalsec_hooks/registry.py, attached lazily through a sys.meta_path
@@ -912,6 +1549,91 @@ ENDPOINTS = [
      "shadow-import", "module load", "Stdlib shadowing / dependency confusion",
      "shadow-import:<path> - a stdlib name loaded from outside the stdlib"),
 
+    # The foreign gate in full. Three behaviours - code-load events, data
+    # taint, provenance recovery for exec/eval/compile - plus the cases that
+    # must stay silent. See the section header above the routes.
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/world-writable", "/foreign/world-writable",
+     "foreign-code", "import", "Any local user can rewrite the module",
+     "foreign-code:<path> at the import"),
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/other-user", "/foreign/other-user",
+     "foreign-code", "import", "Module owned by another user (needs ./setup-foreign.sh)",
+     "foreign-code:<path> - untrusted because of WHO owns it, not the mode bits"),
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/group-writable", "/foreign/group-writable",
+     "foreign-code", "import", "Group-writable by a shared group (needs ./setup-foreign.sh)",
+     "foreign-code:<path> - real group membership is resolved, not just the g+w bit"),
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/pyc", "/foreign/pyc",
+     "foreign-code", ".pyc load", "Bytecode with no source to scan",
+     "foreign-code:<path>.pyc at the sourceless load"),
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/compile", "/foreign/compile",
+     "foreign-code", "compile()", "Hand-rolled plugin loader",
+     "foreign-code:<path> on compile()'s filename argument"),
+    ("Foreign gate: code loads (ES2_MAKE_FOREIGN_VULN)", "GET",
+     "/foreign/exec-file", "/foreign/exec-file?sink=exec",
+     "foreign-code", "exec / eval / compile", "Code load with no filename at all",
+     "exec|eval|compile (foreign code) - the path comes from the taint chain, "
+     "and the raise is synchronous: the source never runs"),
+
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/read", "/foreign/data/read",
+     "foreign file", "sqlite3.execute", "SQL injection with the FILE gate off",
+     "Tainted statement - the foreign gate taints only reads another user could control"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/readlines", "/foreign/data/readlines",
+     "foreign file", "os.system", "Per-line read reaching a shell",
+     "Tainted command string, origin the file (not the line of code)"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/os-read", "/foreign/data/os-read",
+     "foreign fd", "subprocess(shell=True)", "Raw fd read, no file object",
+     "Tainted argument - the verdict is made on the file descriptor"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/mmap", "/foreign/data/mmap",
+     "foreign mmap", "sqlite3.execute", "Bytes that arrive by page fault",
+     "Tainted statement - no read() call exists to instrument"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/parent-dir", "/foreign/data/parent-dir",
+     "foreign parent dir", "sqlite3.execute", "0600 file in a world-writable directory",
+     "Tainted statement - permissions on a file mean nothing if someone else "
+     "controls the name that points at it"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/other-user", "/foreign/data/other-user",
+     "other user's file", "sqlite3.execute", "Shared config / spool file (needs ./setup-foreign.sh)",
+     "Tainted statement, origin the other user's file"),
+    ("Foreign gate: untrusted data from a foreign file", "GET",
+     "/foreign/data/fifo", "/foreign/data/fifo",
+     "foreign FIFO", "os.system", "Named pipe made by another user (needs ./setup-foreign.sh)",
+     "Tainted command string - nothing but the creator's uid to judge it by"),
+
+    ("Foreign gate: untrusted code from any source", "GET",
+     "/foreign/untrusted/socket", "/foreign/untrusted/socket?code=x=6*7",
+     "socket", "exec / eval / compile", "Request data run as code",
+     "untrusted-code:socket:<local>-<peer> - names the read the code arrived "
+     "on, not just the sink it reached"),
+    ("Foreign gate: untrusted code from any source", "GET",
+     "/foreign/untrusted/env", "/foreign/untrusted/env",
+     "env", "exec", "Environment-supplied code",
+     "untrusted-code:env - needs ES2_MAKE_ENV_VULN as well"),
+    ("Foreign gate: untrusted code from any source", "GET",
+     "/foreign/untrusted/tainted", "/foreign/untrusted/tainted?n=7",
+     "make_vuln, taint 7", "exec", "Application-marked untrusted code",
+     "untrusted-code:make_vuln carrying taint number 7, so a rule can be "
+     "scoped to this one source"),
+
+    ("Foreign gate: what must stay silent", "GET",
+     "/foreign/controls", "/foreign/controls",
+     "-", "-", "Root-owned, private, sticky-dir, allowlisted, swappable-module",
+     "No foreign-code event from any of the six. Four are silent outright; the "
+     "allowlisted and swappable ones still taint the source READ, which is the "
+     "distinction the route is there to show"),
+    ("Foreign gate: what must stay silent", "GET",
+     "/foreign/explain", "/foreign/explain?path=/etc/passwd",
+     "-", "-", "Not a vulnerability - the predicate itself",
+     "Which of the four rules matches a path you name, and both verdicts"),
+
     # Same sink every time. The SOURCE picks the label - that is the point.
     ("Composite findings (the source picks the label)", "GET", "/weak-random", "/weak-random",
      "weak-random", "socket.sendall", "Predictable token",
@@ -988,6 +1710,20 @@ CLI_DEMOS = [
      "world-writable file read as data -> exec",
      "foreign-code:<path> - the path is recovered from the taint chain, "
      "even though exec only ever saw a bare string named <string>"),
+    ("What only runtime taint can do (command-line demos)",
+     "foreign-writable main script", "demos/foreign_main_script.py",
+     "ES2_MAKE_FOREIGN_VULN=1 es-python demos/foreign_main_script.py",
+     "world-writable script -> run script",
+     "foreign-code:<path> for the SCRIPT ITSELF, emitted before its first "
+     "statement runs - there is no import to hook and no application code yet "
+     "that could check anything"),
+    ("What only runtime taint can do (command-line demos)",
+     "stdin, argv, env, make_vuln", "demos/untrusted_code_demo.py",
+     "echo 'x=6*7' | ES2_MAKE_STDIN_VULN=1 ES2_MAKE_FOREIGN_VULN=1 "
+     "es-python demos/untrusted_code_demo.py 'y=1+1'",
+     "any tainted string -> exec / eval / compile",
+     "untrusted-code:<origin> - one rule covers every route into exec, and an "
+     "untainted literal in the same file is deliberately not reported"),
     ("What only runtime taint can do (command-line demos)",
      "make_vuln, taint 7", "demos/taint_gauntlet.py",
      "es-python demos/taint_gauntlet.py",

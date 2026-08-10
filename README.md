@@ -42,6 +42,12 @@ pip install -r requirements.txt
 # the app still runs and those routes report which library they would need.
 pip install PyYAML PyJWT SQLAlchemy pymongo redis
 
+# optional: the foreign-code cases that need a second user on the box
+# (owned-by-another-user, group-writable, a FIFO, and the root-owned control).
+# Everything else in /foreign/* builds itself at startup; without this the
+# affected routes say so instead of failing. Undo with --remove.
+./setup-foreign.sh
+
 # A) stock Python - silently vulnerable, no telemetry
 python3 app.py                            # http://127.0.0.1:5000/
 
@@ -49,8 +55,8 @@ python3 app.py                            # http://127.0.0.1:5000/
 ./run-eyalsec.sh
 #    Observe -> Protect:  ES2_RAISE=1 ./run-eyalsec.sh
 
-# C) the three demos that no other tool class can reproduce, run twice each:
-#    as configured, then asking for a raise (works under stock Python too)
+# C) the demos no other tool class can reproduce, run twice each: as
+#    configured, then asking for a raise (works under stock Python too)
 ./run-demos.sh                            # or: ./run-demos.sh python3
 ```
 
@@ -59,7 +65,7 @@ example links and watch each one land on your EyalSec dashboard.
 
 If you only have time for one thing, run `./run-demos.sh` and read
 [What only runtime taint can do](#what-only-runtime-taint-can-do). The endpoints
-show breadth; those three show what the runtime engine does that scanners,
+show breadth; those demos show what the runtime engine does that scanners,
 hooks, agents and filters cannot.
 
 ### On a real monitored machine
@@ -90,7 +96,7 @@ for a local *dev* es-python build.
 | stdin / `input()` | `ES2_MAKE_STDIN_VULN` | `demos/stdin_demo.py`, `demos/input_demo.py` |
 | Environment variable | `ES2_MAKE_ENV_VULN` | `GET /source/env` |
 | Command-line `argv` | `ES2_MAKE_ENV_VULN` | `demos/argv_demo.py` |
-| Foreign code (other-user-writable) | `ES2_MAKE_FOREIGN_VULN` | `GET /source/foreign`, `demos/uncatchable_plugin.py` |
+| Foreign code (other-user-writable) | `ES2_MAKE_FOREIGN_VULN` | `GET /source/foreign` and the whole `/foreign/*` group, `demos/uncatchable_plugin.py`, `demos/foreign_main_script.py`, `demos/untrusted_code_demo.py` |
 | `make_vuln(obj, n)` (an application-declared secret) | dev build: whenever the taint engine is active. Installed build: only when the machine config enables the `make_vuln` source | `demos/secret_exfil_server.py`, `demos/taint_gauntlet.py` |
 | Unverified TLS peer | folds under `ES2_MAKE_SOCKET_VULN` | `GET /source/tls-unverified` |
 | Weak PRNG output | `ES2_MAKE_WEAKRANDOM_VULN` | `GET /weak-random` |
@@ -151,6 +157,123 @@ Other sources:
 | `GET /source/foreign` | Supply-chain / tampered code | load a world-writable `.py` -> `foreign-code:<path>` |
 | `GET /source/tls-unverified` | Unauthenticated TLS peer | `CERT_NONE` TLS read -> `sqlite3.execute` |
 | `GET /source/shadow-import` | Stdlib shadowing | `import colorsys` resolves to a planted file -> `shadow-import:<path>` |
+
+### The foreign gate, in full
+
+Every other source answers *is this data attacker-controlled?*. The foreign
+gate (`ES2_MAKE_FOREIGN_VULN` / `--make-foreign-vuln`) answers a different
+question - *could a user other than me have written this?* - which is why it
+fires on code no attacker has touched yet and on data no request has carried.
+
+A file is foreign when any of these matches. The first three are the file's
+own properties and decide **code loads**; the fourth is about its directory and
+additionally decides **reads**:
+
+| Rule | Why it counts |
+|---|---|
+| Owned by another, non-root user | Whoever owns it can rewrite it. Its permissions are irrelevant: the 0644 fixture in `/foreign/other-user` is one you cannot write at all. |
+| World-writable (`o+w`) | Any local account, container, CI runner or compromised service owns your next import. |
+| Group-writable and the group has another real member | Membership is resolved for real, including users whose *primary* group it is. A private one-member group correctly produces nothing. |
+| Immediate parent directory lets another user rename or replace it (reads only) | Permissions on a file mean nothing if somebody else controls the name that points at it. The sticky bit is honoured, so your own file in `/tmp` is **not** foreign. |
+
+Root-owned files are trusted deliberately. Root can replace anything on the
+box, so calling root-owned code untrusted would report the whole standard
+library on every import and the signal would be worth nothing.
+
+**1. Code loads.** No taint, no sink, no data flow: the load is the finding.
+
+| Endpoint | How the code arrives | Reported as |
+|---|---|---|
+| `GET /foreign/world-writable` | `import` of a mode-0666 module on `sys.path` | `import (foreign code)`, origin `foreign-code:<path>` |
+| `GET /foreign/other-user` | `import` of a module owned by another user | same, origin the other user's file |
+| `GET /foreign/group-writable` | `import` of a group-writable module | same |
+| `GET /foreign/pyc` | a world-writable `.pyc`, no source on disk | same, on the bytecode path |
+| `GET /foreign/compile` | `compile(src, path, "exec")` - a hand-rolled plugin loader | `compile`, origin `foreign-code:<path>` |
+| `GET /foreign/exec-file` | `exec(open(path).read())` - filename is `<string>` | `exec (foreign code)`; add `?sink=eval` or `?sink=compile` |
+| `demos/foreign_main_script.py` | the **main script itself** is world-writable | `run script`, emitted before the script's first statement |
+
+The last two are the ones no other tool class reaches. `exec` of a string sees
+the filename `<string>`, so audit hooks, EDR file rules, SAST and RASP have
+nothing to key on; es-python walks the string's taint chain back to the read
+that produced it and reports the original path. And a foreign main script is
+judged inside the interpreter's `run_mod`, before any application code exists
+that could have checked anything.
+
+**2. Data taint.** `ES2_MAKE_FILE_VULN` taints *every* file read on the box.
+The foreign gate taints only the reads another user could have controlled,
+which is what makes it something you can leave armed. Each route below fires
+with the file gate switched **off**:
+
+| Endpoint | Read path | Sink |
+|---|---|---|
+| `GET /foreign/data/read` | `open().read()` | `sqlite3.execute` |
+| `GET /foreign/data/readlines` | `readlines()` (its own C path, its own origin stamping) | `os.system` |
+| `GET /foreign/data/os-read` | `os.open` + `os.read`, no file object; judged on the **fd** | `subprocess(shell=True)` |
+| `GET /foreign/data/mmap` | memory-mapped, so no `read()` call exists to instrument | `sqlite3.execute` |
+| `GET /foreign/data/parent-dir` | a 0600 file of yours in a world-writable, non-sticky directory | `sqlite3.execute` |
+| `GET /foreign/data/other-user` | a data file owned by another user | `sqlite3.execute` |
+| `GET /foreign/data/fifo` | a FIFO created by another user - no content to scan, only a creator | `os.system` |
+
+**3. Untrusted code from any source.** The same `exec`/`eval`/`compile`
+instrumentation recovers provenance for code that never came from a file. A
+foreign-writable origin reports as `foreign-code:`; everything else reports as
+`untrusted-code:<origin>`, so one rule covers the whole family. The origin
+names the *source*, not the value, so you can write that rule without knowing
+what the attacker will send.
+
+| Endpoint | Source | Origin reported |
+|---|---|---|
+| `GET /foreign/untrusted/socket` | HTTP request data | `untrusted-code:socket:<local>-<peer>`, or `untrusted-code:fd:<n>` here, because werkzeug parses the request through a file wrapper over the connection rather than calling `recv` itself |
+| `GET /foreign/untrusted/env` | `$DEMO_CODE` | `untrusted-code:env` |
+| `GET /foreign/untrusted/tainted` | `make_vuln(code, 7)` | `untrusted-code:make_vuln`, carrying taint number 7 |
+| `demos/untrusted_code_demo.py` | stdin, argv, env, `make_vuln`, plus an untainted control | `untrusted-code:<stdin>` / `:argv` / `:env` / `:make_vuln` |
+
+This raise is **synchronous**: the call sites propagate the error, so the
+source is never compiled and never runs. Sink raises elsewhere in this
+repository fire after the dangerous call has been made.
+
+**4. What stays silent.** `GET /foreign/controls` performs six loads and reads
+that must produce no `foreign-code` event, because a detector is only worth
+having if it also knows when to say nothing:
+
+| Case | Outcome |
+|---|---|
+| Root-owned module | silent |
+| Your own private file, read | silent |
+| Your own private module, imported | silent |
+| Your file in a sticky world-writable dir (`/tmp`) | silent - this is why the parent-directory rule has a sticky-bit exception at all |
+| World-writable module under `ES2_FOREIGN_CODE_ALLOW` | no code-load event. The file is still world-writable, so importlib's read of its source is still tainted and the ordinary sink event still fires. Unset the variable and the foreign-code event comes back on top |
+| 0600 module in a world-writable dir, imported | no code-load event: the parent-directory rule applies to reads. The source read importlib performs is a read, so that still reports |
+
+`GET /foreign/explain?path=...` runs the predicate against any path you name
+and shows which rules matched.
+
+**Setting it up.** Most of the lab builds itself at startup, because
+"world-writable" is something any unprivileged process can arrange. Three cases
+are not - a file owned by another user, a group-writable file in a genuinely
+shared group, and a FIFO created by another user - plus the root-owned control.
+Those come from a script, and the routes that need them report exactly that
+until you run it:
+
+```bash
+./setup-foreign.sh            # needs sudo; creates /var/tmp/eyalsec-foreign
+./setup-foreign.sh --remove   # undoes all of it
+```
+
+Three things worth knowing before you read a dashboard full of these:
+
+- **One event per path per process.** Every route uses its own fixture file for
+  that reason; a repeat hit on the same route is deliberately silent until the
+  app restarts.
+- **Under the Flask dev server the foreign gate alone already taints request
+  data.** A socket file descriptor counts as foreign for reads, so werkzeug's
+  own request parsing produces framework-internal events with `fd:<n>` origins.
+  The findings you are looking for are the ones whose origin is a path.
+- **`ES2_MAKE_ENV_VULN=1` plus a blunt `ES2_RAISE=1` does not start.** Env
+  taint marks `$HOME`, `site.py` stats the user-site directory during
+  interpreter startup, and the raise fires there: `Failed to import the site
+  module`. Same family as the `ES2_MAKE_FILE_VULN` + `ES2_RAISE` failure. A
+  dashboard rule scoped to one source and one sink has neither problem.
 
 **Composite findings** - same sink every time, and the *source* picks the
 label. This is the entire reason the weak-random and hardcoded sources exist: a
@@ -220,6 +343,13 @@ python3 demos/secret_exfil_server.py --selftest   # 1. the secret that cannot be
 python3 demos/uncatchable_plugin.py               # 2. the load nothing else sees
 python3 demos/taint_gauntlet.py                   # 3. taint through 15 transformations
 ```
+
+Two more in the same family belong to
+[the foreign gate](#the-foreign-gate-in-full): `demos/foreign_main_script.py`
+(the world-writable *main script*, judged before its first statement runs) and
+`demos/untrusted_code_demo.py` (code loads from stdin, argv, env and
+`make_vuln`, reported by origin, with an untainted control that must stay
+silent). `./run-demos.sh` runs all five.
 
 Each one runs under **both** interpreters and prints which it is running under,
 so the contrast is visible in a single command. Under stock CPython they all
@@ -451,15 +581,20 @@ extension types, so they need a vendored fork too.
 ```
 app.py                        all HTTP endpoints, each commented SOURCE -> SINK -> report
 demo_credentials.py           fake hardcoded secrets for the `hardcoded` taint source
+foreign_lab.py                fixtures for the /foreign/* routes, plus the foreign
+                              predicate mirrored in Python so each route can show its work
 landing.py                    the landing-page catalog served at /, rendered in pure Python
 run-eyalsec.sh                launch the web app under a dev es-python, every source armed
-run-demos.sh                  run the three CLI demos twice each, with and without a raise
+run-demos.sh                  run the CLI demos twice each, with and without a raise
+setup-foreign.sh              sudo helper for the foreign cases that need a second user
 demos/
   stdin_demo.py               stdin source -> eval
   input_demo.py               input() source -> eval
   argv_demo.py                argv source -> os.system
   secret_exfil_server.py      a secret that cannot leave the process
   uncatchable_plugin.py       the code load nothing else can see
+  foreign_main_script.py      the world-writable main script, judged before it runs
+  untrusted_code_demo.py      untrusted-code loads from stdin / argv / env / make_vuln
   taint_gauntlet.py           taint through 15 transformations
   driver_sinks.py             SQL / LDAP injection through the bundled DB drivers
   es_compat.py                inert stand-ins so every demo also runs on stock CPython
