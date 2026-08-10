@@ -29,10 +29,24 @@ export ES2_MAKE_SOCKET_VULN=1     # HTTP request data (recv)
 export ES2_MAKE_FILE_VULN=1       # file reads          -> /source/file
 export ES2_MAKE_STDIN_VULN=1      # stdin / input()     -> demos/
 export ES2_MAKE_ENV_VULN=1        # env vars + sys.argv -> /source/env, demos/argv_demo.py
-export ES2_MAKE_FOREIGN_VULN=1    # other-user-writable code -> /source/foreign
+export ES2_MAKE_FOREIGN_VULN=1    # other-user-writable code -> /source/foreign, /foreign/*
 
 # The env-source demo reads this tainted value straight into a shell.
 export DEMO_INPUT="127.0.0.1; id"
+# ...and /foreign/untrusted/env reads this one straight into exec().
+export DEMO_CODE="answer = 6 * 7"
+
+# Operator-trusted prefix for the foreign-code detector: a world-writable file
+# under this directory is loaded WITHOUT an event, which is what /foreign/controls
+# demonstrates. Unset it and the same file fires - that is the point of the
+# control. Matching is on component boundaries, so this exempts the directory
+# and nothing that merely starts with the same characters.
+export ES2_FOREIGN_CODE_ALLOW="${TMPDIR:-/tmp}/eyalsec_foreign_lab/operator_trusted"
+
+# NOTE on /foreign/data/*: those routes prove the foreign gate taints file
+# reads on its own. With ES2_MAKE_FILE_VULN=1 above they would fire either way,
+# so to see the distinction, run this script with ES2_MAKE_FILE_VULN=0 - only
+# the reads another user could have controlled are then reported.
 
 echo "launching vulnerable-python under: $PY"
 echo "taint sources armed: socket, file, stdin, env, argv, foreign-code"

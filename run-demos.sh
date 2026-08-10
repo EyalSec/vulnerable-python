@@ -68,6 +68,28 @@ run "2. the code load nothing else can see  [as configured]" \
 run "2. the code load nothing else can see  [asking for a raise]" \
   env ES2_MAKE_FOREIGN_VULN=1 ES2_RAISE=1 "$PY" demos/uncatchable_plugin.py
 
+run "2b. the world-writable main script  [as configured]" \
+  env ES2_MAKE_FOREIGN_VULN=1 "$PY" demos/foreign_main_script.py
+
+run "2b. the world-writable main script  [asking for a raise]" \
+  env ES2_MAKE_FOREIGN_VULN=1 ES2_RAISE=1 "$PY" demos/foreign_main_script.py
+
+# Piped through a shell so stdin genuinely carries code - that is one of the
+# four sources this demo covers.
+#
+# The raise run drops ES2_MAKE_ENV_VULN on purpose, for the same reason demo 2
+# drops ES2_MAKE_FILE_VULN: env taint marks $HOME, site.py stats the user-site
+# directory during startup, and the blunt raise aborts there with "Failed to
+# import the site module" before any demo code runs. A dashboard rule scoped to
+# one source and one sink has no such problem; the blunt env var does.
+UNTRUSTED_ENV='ES2_MAKE_FOREIGN_VULN=1 ES2_MAKE_STDIN_VULN=1 ES2_MAKE_ENV_VULN=1 DEMO_CODE="z = 3"'
+
+run "2c. untrusted code from stdin / argv / env  [as configured]" \
+  bash -c "echo 'x = 6 * 7' | env $UNTRUSTED_ENV '$PY' demos/untrusted_code_demo.py 'y = 1 + 1'"
+
+run "2c. untrusted code from stdin / make_vuln  [asking for a raise]" \
+  bash -c "echo 'x = 6 * 7' | env ES2_MAKE_FOREIGN_VULN=1 ES2_MAKE_STDIN_VULN=1 ES2_RAISE=1 '$PY' demos/untrusted_code_demo.py 'y = 1 + 1'"
+
 run "3. taint through 15 transformations  [as configured]" \
   env ES2_MAKE_SOCKET_VULN=1 "$PY" demos/taint_gauntlet.py
 
@@ -89,6 +111,8 @@ Compare the two RESULT lines in each pair.
                 them:
                   demo 1:  Source 1        Event sendall  Mode Raise
                   demo 2:  Source foreign  Event exec     Mode Raise
+                  demo 2b: Source foreign  Event run_mod  Mode Raise
+                  demo 2c: Source stdin    Event exec     Mode Raise
                   demo 3:  Source 7        Event sendall  Mode Raise
 
   both block -> this machine already carries the matching raise rules.
