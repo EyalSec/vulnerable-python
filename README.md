@@ -599,6 +599,8 @@ demos/
   driver_sinks.py             SQL / LDAP injection through the bundled DB drivers
   es_compat.py                inert stand-ins so every demo also runs on stock CPython
 priv/                         privilege escalation, and why it does not work here
+  file.txt / read_value.py    the minimal data case: read a value from a file
+                              another account can write (setup makes it so)
   escalate_syspath.py         helper module on a writable sys.path directory
   escalate_main_script.py     the privileged main script is itself writable
   escalate_pyc_cache.py       private source, writable bytecode cache (data path)

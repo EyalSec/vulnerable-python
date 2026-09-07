@@ -37,6 +37,8 @@ DIR=/var/tmp/eyalsec-privesc
 GROUP=eyalsecdemo
 OTHER=nobody                          # the "somebody else"; exists everywhere
 ME=${SUDO_USER:-$(id -un)}
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+DATA_FILE="$SCRIPT_DIR/file.txt"      # the committed fixture read by read_value.py
 HAVE_SUDO=0
 if [ "$(id -u)" = "0" ] || sudo -n true 2>/dev/null; then HAVE_SUDO=1; fi
 
@@ -80,6 +82,8 @@ if [ "${1:-}" = "--remove" ]; then
         run_priv gpasswd -d "$ME" "$GROUP" >/dev/null 2>&1 || true
         run_priv groupdel "$GROUP" 2>/dev/null || true
     fi
+    [ -e "$DATA_FILE" ] && chmod o-w "$DATA_FILE" 2>/dev/null && \
+        say "restored $DATA_FILE to not world-writable"
     say "removed $DIR and group $GROUP"
     exit 0
 fi
@@ -90,6 +94,16 @@ fi
 say "building privilege-escalation fixtures in $DIR"
 mkdir -p "$DIR"
 chmod 755 "$DIR"
+
+# 0. The simplest data case: make the committed file.txt writable by others, so
+#    the value read_value.py reads is attacker-controlled. Reading from a
+#    foreign-writable file taints the value 'foreign' (no root needed).
+if [ -e "$DATA_FILE" ]; then
+    chmod o+w "$DATA_FILE"
+    say "  [ok] world-writable data   : $DATA_FILE (read by read_value.py)"
+else
+    say "  [--] $DATA_FILE not found - run from a checkout that has it"
+fi
 
 # 1. A writable sys.path directory with a planted helper module (world-writable,
 #    no root needed). This is the escalate_syspath.py case, as a durable fixture.
