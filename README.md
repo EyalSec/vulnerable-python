@@ -598,6 +598,13 @@ demos/
   taint_gauntlet.py           taint through 15 transformations
   driver_sinks.py             SQL / LDAP injection through the bundled DB drivers
   es_compat.py                inert stand-ins so every demo also runs on stock CPython
+priv/                         privilege escalation, and why it does not work here
+  escalate_syspath.py         helper module on a writable sys.path directory
+  escalate_main_script.py     the privileged main script is itself writable
+  escalate_pyc_cache.py       private source, writable bytecode cache (data path)
+  escalate_startup_hooks.py   sitecustomize on a writable startup path
+  setup-privesc.sh            create the access (world-writable, and sudo: owner/group)
+  run-priv.sh                 run all four twice: detected, then (attempted) refused
 sample/                       fixture files for the file-read and path-traversal demos
 requirements.txt              Flask (the only dependency)
 ```

@@ -48,7 +48,7 @@ world-writable directory lets someone swap your file out.
 
 `verdict()` below re-implements those rules in pure Python so every route can
 show its own arithmetic. It is a mirror for the demo's benefit, not the
-detector: es-python makes this decision in C, at the open, before your code
+detector: es-python makes this decision at the open itself, before your code
 gets a file object at all.
 """
 

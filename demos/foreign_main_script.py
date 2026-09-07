@@ -18,8 +18,8 @@ entry that invokes it. There is no import to hook, no `sys.modules` entry to
 inspect, and no application code running yet that could check anything - by the
 time your first line executes, the attacker's line has already executed too.
 
-es-python performs the foreign check inside `run_mod`, the interpreter function
-that runs the main script, so the event happens before any user code at all:
+es-python performs the foreign check as it loads the main script itself,
+so the event happens before any user code at all:
 
     origin  foreign-code:/path/to/deploy_job.py
     event   run script
@@ -68,7 +68,7 @@ def planted_child():
     print(f" child mode        : {stat.filemode(st.st_mode)}")
     print(f" world-writable    : {bool(st.st_mode & stat.S_IWOTH)}")
     if ES_PYTHON:
-        print(" under es-python this file was judged in run_mod, before the first")
+        print(" under es-python this file was judged as it was loaded, before the first")
         print(" statement of the script executed - the parent reports the outcome.")
     else:
         print(" stock CPython judged nothing: the interpreter ran this file without")
@@ -110,7 +110,7 @@ def main():
         print()
         if blocked:
             print(" RESULT: the script never ran.")
-            print("         es-python judged the main script foreign-writable in run_mod")
+            print("         es-python judged the main script foreign-writable as it loaded it")
             print("         and aborted the load before the first statement executed.")
         elif ES_PYTHON:
             print(" RESULT: the script ran, and es-python reported where it came from:")
