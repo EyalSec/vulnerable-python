@@ -4,9 +4,9 @@
 # source armed. Hitting the endpoints then produces source->sink events on the
 # EyalSec dashboard (Observe), or aborts at the sink if ES2_RAISE=1 (Protect).
 #
-# On the obfuscated PRODUCTION build the taint sources are armed from the
-# dashboard machine config instead of these environment variables - this
-# script's flag path targets a dev build such as ~/opt/eyalsec.
+# On an installed es-python the taint sources are armed from the dashboard
+# machine config instead of these environment variables - this script's flag
+# path targets a dev build such as ~/opt/eyalsec.
 #
 # Usage:
 #   ./run-eyalsec.sh                       # uses ~/opt/eyalsec/bin/python3.13

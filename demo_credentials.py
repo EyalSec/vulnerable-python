@@ -8,17 +8,16 @@
 
 Why this is a separate module instead of a constant in app.py
 -------------------------------------------------------------
-The `hardcoded` source is AST-driven and hooks exactly one place: the
-`finally:` block of the builtin `compile()`. That has two consequences the
-demo has to respect, and neither is a bug:
+The `hardcoded` source scans a module's source when it is imported and
+compiled. That has two consequences the demo has to respect, and neither is a
+bug:
 
-  1. `python app.py` runs the top-level script through `PyRun_FileExFlags`,
-     which never calls the builtin `compile()`. A literal written directly in
-     the main script is therefore NOT scanned. An *imported* module is - the
-     import machinery compiles it with the builtin `compile()`.
+  1. The script you run directly (`python app.py`) is NOT scanned, so a
+     literal written directly in the main script is not seen. An *imported*
+     module is.
 
-  2. A `__pycache__` hit performs no compile at all, so the literals are seen
-     on the first (uncached) import only. `rm -rf __pycache__` to see the
+  2. A `__pycache__` hit means the module is not compiled again, so the
+     literals are seen on the first (uncached) import only. `rm -rf __pycache__` to see the
      source fire again.
 
 So the credentials live here, this module is imported by app.py, and the
@@ -29,7 +28,7 @@ Arming: `--make-secret-vuln`, `ES2_MAKE_SECRET_VULN=1`, or
 is named `hardcoded` (taint number 12). There is no dashboard machine-config
 category for it - it is flag/env only.
 
-es-python taints these values at compile time with origin
+es-python taints these values when the module is loaded, with origin
 `hardcoded:<file>:<line>`. The finding then fires where the value is USED:
 `credential exfiltration` at a socket send, `credential logging` at a log
 record. That is the whole point of the source - a secret sitting in a variable
@@ -55,8 +54,7 @@ SERVICE_ACCOUNTS = {
 
 # DELIBERATELY NOT MATCHED, and worth seeing next to the ones that are: the
 # token-shape filter rejects any value containing whitespace, so a passphrase
-# is missed by design. This is recorded in Lib/_eyalsec_secrets.py as an
-# intended trade, not an oversight - matching it would drag in every English
+# is missed by design. This is an intended trade, not an oversight - matching it would drag in every English
 # sentence assigned to a variable whose name happens to end in "password".
 LEGACY_PASSWORD = "correct horse battery staple"
 
