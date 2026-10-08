@@ -39,7 +39,7 @@ way on purpose. The source loader reads the cached bytecode and hands it to
 `foreign-code:<path>`, sink `marshal loads` — not as a `foreign-code:` code
 load. That is where you will actually find it, so that is what the demo tells
 you. `escalate_pyc_cache.py` prints `get_taint()` on the cache bytes directly:
-under es-python it is `'foreign'`, under stock CPython it is `None`.
+under es-python it is `'foreign'`, under plain python3 it is `None`.
 
 ## What counts as foreign
 
@@ -76,7 +76,7 @@ es-python priv/escalate_syspath.py --raise
 # all four, each twice
 ./priv/run-priv.sh
 
-# the contrast: the same escalations under stock Python, silently
+# the contrast: the same escalations under plain python3, silently
 ./priv/run-priv.sh python3
 ```
 

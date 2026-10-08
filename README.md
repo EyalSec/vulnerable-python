@@ -6,7 +6,7 @@ vulnerability, wired from a distinct **taint source** into a distinct **sink**.
 Together the endpoints cover every source and every sink class EyalSec tracks.
 
 Think DVWA or OWASP WebGoat, but purpose-built to show what runtime taint
-tracking sees: run the *same unchanged code* under stock CPython and it is a
+tracking sees: run the *same unchanged code* under plain python3 and it is a
 normal, silently exploitable app; run it under **es-python** and every attack
 that reaches a sink is reported to your dashboard, or aborted at the sink.
 
@@ -21,11 +21,11 @@ that reaches a sink is reported to your dashboard, or aborted at the sink.
 
 The app is plain standard-library Python. It does not import, detect, or know
 about EyalSec. It is byte-for-byte identical between the two runs below. Only
-the interpreter changes.
+the runtime changes.
 
 | Run it with | What happens |
 |---|---|
-| **stock CPython** (`python3 app.py`) | The app works and quietly does whatever the attacker asked. No signal, no record. This is what an unprotected Python service does today. |
+| **plain python3** (`python3 app.py`) | The app works and quietly does whatever the attacker asked. No signal, no record. This is what an unprotected Python service does today. |
 | **es-python** (EyalSec) | Tainted data reaching a sink is reported to the dashboard (**Observe** mode), or raises a `RuntimeError` at the sink (**Protect** mode, `ES2_RAISE=1`). Zero source changes. |
 
 That difference, with no code changes, is the entire product.
@@ -48,7 +48,7 @@ pip install PyYAML PyJWT SQLAlchemy pymongo redis
 # affected routes say so instead of failing. Undo with --remove.
 ./setup-foreign.sh
 
-# A) stock Python - silently vulnerable, no telemetry
+# A) plain python3 - silently vulnerable, no telemetry
 python3 app.py                            # http://127.0.0.1:5000/
 
 # B) es-python, local dev build - arms every taint source, then launches
@@ -56,7 +56,7 @@ python3 app.py                            # http://127.0.0.1:5000/
 #    Observe -> Protect:  ES2_RAISE=1 ./run-eyalsec.sh
 
 # C) the demos no other tool class can reproduce, run twice each: as
-#    configured, then asking for a raise (works under stock Python too)
+#    configured, then asking for a raise (works under plain python3 too)
 ./run-demos.sh                            # or: ./run-demos.sh python3
 ```
 
@@ -65,7 +65,7 @@ example links and watch each one land on your EyalSec dashboard.
 
 If you only have time for one thing, run `./run-demos.sh` and read
 [What only runtime taint can do](#what-only-runtime-taint-can-do). The endpoints
-show breadth; those demos show what the runtime engine does that scanners,
+show breadth; those demos show what runtime taint tracking does that scanners,
 hooks, agents and filters cannot.
 
 ### On a real monitored machine
@@ -76,10 +76,10 @@ For a client-representative demo, do not use the dev flags. Instead:
    `/install.sh`.
 2. In the dashboard **machine config**, arm the taint sources you want (socket,
    file, stdin, env, foreign-code) and pick Observe or Protect per sink.
-3. Run the app with the installed interpreter: `python3.13 app.py`.
+3. Run the app with the installed es-python: `python3.13 app.py`.
 4. Exercise the endpoints and watch the events appear, attributed to that machine.
 
-The obfuscated production build arms taint from the **server-pushed machine
+An installed es-python arms taint from the **server-pushed machine
 config**, not from environment variables. The `run-eyalsec.sh` flag path is only
 for a local *dev* es-python build.
 
@@ -112,8 +112,8 @@ The last four are worth a note, because they are not shaped like the others:
 - **Weak PRNG** and **hardcoded credential** are flag/env only. Neither has a
   dashboard machine-config category, so neither can be armed from the UI -
   `--make-everything-vuln` does enable both. The hardcoded scan is the only
-  instrumentation layer with steady-state cost, which is why it stays off
-  unless asked for. Note the flag says `secret` while the source is named
+  source with a steady-state cost, which is why it stays off unless asked
+  for. Note the flag says `secret` while the source is named
   `hardcoded`.
 
 **Sink classes** (where tainted data becomes an exploit): SQL execution, OS
@@ -194,10 +194,10 @@ library on every import and the signal would be worth nothing.
 
 The last two are the ones no other tool class reaches. `exec` of a string sees
 the filename `<string>`, so audit hooks, EDR file rules, SAST and RASP have
-nothing to key on; es-python walks the string's taint chain back to the read
+nothing to key on; es-python follows the string's taint chain back to the read
 that produced it and reports the original path. And a foreign main script is
-judged inside the interpreter's `run_mod`, before any application code exists
-that could have checked anything.
+judged as it is loaded, before any application code exists that could have
+checked anything.
 
 **2. Data taint.** `ES2_MAKE_FILE_VULN` taints *every* file read on the box.
 The foreign gate taints only the reads another user could have controlled,
@@ -207,15 +207,15 @@ with the file gate switched **off**:
 | Endpoint | Read path | Sink |
 |---|---|---|
 | `GET /foreign/data/read` | `open().read()` | `sqlite3.execute` |
-| `GET /foreign/data/readlines` | `readlines()` (its own C path, its own origin stamping) | `os.system` |
+| `GET /foreign/data/readlines` | `readlines()`, a separate read path with its own origin reporting | `os.system` |
 | `GET /foreign/data/os-read` | `os.open` + `os.read`, no file object; judged on the **fd** | `subprocess(shell=True)` |
-| `GET /foreign/data/mmap` | memory-mapped, so no `read()` call exists to instrument | `sqlite3.execute` |
+| `GET /foreign/data/mmap` | memory-mapped, so no `read()` call happens at all | `sqlite3.execute` |
 | `GET /foreign/data/parent-dir` | a 0600 file of yours in a world-writable, non-sticky directory | `sqlite3.execute` |
 | `GET /foreign/data/other-user` | a data file owned by another user | `sqlite3.execute` |
 | `GET /foreign/data/fifo` | a FIFO created by another user - no content to scan, only a creator | `os.system` |
 
 **3. Untrusted code from any source.** The same `exec`/`eval`/`compile`
-instrumentation recovers provenance for code that never came from a file. A
+check recovers provenance for code that never came from a file. A
 foreign-writable origin reports as `foreign-code:`; everything else reports as
 `untrusted-code:<origin>`, so one rule covers the whole family. The origin
 names the *source*, not the value, so you can write that rule without knowing
@@ -288,10 +288,8 @@ is, and the two look identical at the call site.
 | `GET /secret-disclosure` | `secret disclosure` | `os.environ` value -> `socket.sendall` |
 | `GET /log-forging` | `log forging` | CR/LF in request data -> `logging` |
 
-**Third-party adapter sinks.** Non-stdlib libraries are covered by declarative
-adapters - one row each in `_eyalsec_hooks/registry.py`, attached lazily
-through a `sys.meta_path` finder. No vendored fork, no C change; adding a
-library is a registry edit. 42 rows ship today. These are the ones reachable
+**Third-party library sinks.** es-python also covers popular non-stdlib
+libraries; 42 library sinks ship today. These are the ones reachable
 without a database server, and each route degrades to a plain "not installed"
 message so the app still runs on Flask alone.
 
@@ -305,20 +303,20 @@ message so the app still runs on Flask alone.
 | `GET /adapter/mongo` | `nosql mongodb` | `Collection.find` |
 | `GET /adapter/redis` | `nosql redis` | `Redis.eval` |
 
-Two of those rows record a deliberate coverage decision rather than a gap.
-`Redis.execute_command` was **dropped** from the registry because RESP is
+Two of those record a deliberate coverage decision rather than a gap.
+`Redis.execute_command` is deliberately **not** a sink, because RESP is
 length-prefixed, so a value cannot escape its field and storing user data in
-redis is the normal case - it fired on 100% of correct traffic. Only `eval`,
+redis is the normal case - it would fire on 100% of correct traffic. Only `eval`,
 which ships a Lua program to the server, is a genuine code-injection sink. The
-mongo extractor is narrowed the same way: it walks the filter document
+mongo sink is narrowed the same way: it walks the filter document
 (bounded to depth 6 and 512 nodes) and yields only `$`-prefixed keys plus the
 *value* of `$where` / `$expr` / `$function` / `$accumulator` / `$jsonSchema`,
 so an ordinary user-supplied field is not an event.
 
 `/adapter/jinja2` compiles the template and deliberately does **not** render
-it. The adapter fires at `from_string`, so compiling is enough to reach the
-sink - and rendering would pull in `markupsafe`'s C speedups, which segfault
-under es-python (see the note at the end of this file).
+it. The sink fires at `from_string`, so compiling is enough to reach it - and
+rendering would pull in `markupsafe`'s compiled speedups extension, which is
+not supported under es-python (see the note at the end of this file).
 
 Process-launch sources (CLI demos, not HTTP):
 
@@ -351,8 +349,8 @@ Two more in the same family belong to
 `make_vuln`, reported by origin, with an untainted control that must stay
 silent). `./run-demos.sh` runs all five.
 
-Each one runs under **both** interpreters and prints which it is running under,
-so the contrast is visible in a single command. Under stock CPython they all
+Each one runs under **both** runtimes and prints which it is running under,
+so the contrast is visible in a single command. Under plain python3 they all
 succeed silently, which is the point.
 
 ### 1. A secret that cannot leave the process
@@ -421,9 +419,9 @@ strategy to its dead end:
 | File integrity monitoring | Can flag the write, if you knew in advance to watch that path. It tells you a file changed, not that your process ran it. |
 
 es-python sees it because the taint chain remembers where the bytes came from.
-The `open().read()` stamped the resolved path onto the string; when that string
-reaches `exec`, the interpreter walks back to the origin, stats it, finds it
-writable by another user, and reports `foreign-code:/tmp/eyalsec_demo_plugin.py`.
+The `open().read()` recorded the resolved path with the string; when that
+string reaches `exec`, es-python follows it back to the origin, checks it, finds
+it writable by another user, and reports `foreign-code:/tmp/eyalsec_demo_plugin.py`.
 Under an armed rule the raise is synchronous, so the source is never compiled:
 
 ```
@@ -474,15 +472,15 @@ rule still stops the send.
   boundaries and then decide which path a real run takes. Chains built from
   `codecs`, `memoryview`, `binascii` and container round-trips are where static
   models get over-approximated into uselessness or quietly give up.
-- **Python-level RASP** hooks the functions it knows. `str.translate`,
-  `memoryview.tobytes`, `bytes.hex` and a dict-key round trip are C-level
-  built-in operations: an agent written in Python cannot patch them and has
-  nowhere to attach per-object state, so taint is lost at the first one and the
-  rest of the chain is invisible.
+- **Python-level RASP** wraps the functions it knows. `str.translate`,
+  `memoryview.tobytes`, `bytes.hex` and a dict-key round trip are built-in
+  operations it cannot wrap, and a plain `str` has nowhere to carry per-object
+  state, so taint is lost at the first one and the rest of the chain is
+  invisible.
 
-es-python propagates taint at the level the transformation happens, in the C
-implementation of the operation itself. Every step in the chain is there because
-it is verified to carry taint through. Arm the block with `Source: 7`,
+es-python follows the value through each operation as the program runs:
+detection runs inside the program, not beside it. Every step in the chain is
+there because it is verified to carry taint through. Arm the block with `Source: 7`,
 `Event: sendall`, `Mode: Raise`.
 
 ### What actually turns raising on
@@ -510,23 +508,23 @@ whether it is also stopped.
 
 ---
 
-## SQL injection across every shipped driver
+## SQL injection across every supported driver
 
 The live `/sqli` route uses stdlib `sqlite3`, so it runs anywhere with no
-database server. es-python also ships the dominant third-party drivers, each
-carrying the identical statement-string sink (fires on the query text only, so
+database server. es-python also covers the dominant third-party drivers, each
+with the identical statement-string sink (fires on the query text only, so
 correct parameterization is never a false positive). Point any of these at a
 real database and the same event fires:
 
-| Database | Driver | Sink site |
+| Database | Driver | Checked at |
 |---|---|---|
-| SQLite | `sqlite3` (stdlib, live here) | cursor execute |
-| PostgreSQL | `psycopg2` | `_psyco_curs_execute` (C) |
-| PostgreSQL | `psycopg` v3 | `PGconn` query wrappers (C) |
-| MySQL | `mysqlclient` | `_mysql` query (C) |
-| MariaDB | `mariadb` | `MrdbCursor_parse` (C) |
-| Oracle | `oracledb` | `BaseCursorImpl._prepare` (Cython) |
-| LDAP | `python-ldap` | `l_ldap_search_ext` (C) |
+| SQLite | `sqlite3` (stdlib, live here) | statement execute |
+| PostgreSQL | `psycopg2` | statement execute |
+| PostgreSQL | `psycopg` v3 | statement execute |
+| MySQL | `mysqlclient` | statement execute |
+| MariaDB | `mariadb` | statement execute |
+| Oracle | `oracledb` | statement prepare |
+| LDAP | `python-ldap` | search filter |
 
 `demos/driver_sinks.py` exercises all of them. It runs each attacker value
 twice per database - once concatenated into the statement, once as a bound
@@ -553,13 +551,8 @@ on a base DN would fire on the extremely common "base DN built from a tenant
 id" pattern, and DN injection is a distinct class that would need its own
 label.
 
-Why these are vendored forks rather than registry adapters: `python-ldap` talks
-to the directory through OpenLDAP's own C socket, so its traffic never crosses
-Python's `socket` module and the C send/connect sinks never see it - and
-`_ldap.LDAPObject` is a statically-defined C extension type, which the adapter
-registry cannot attribute-patch. The same constraint is why SQL Server
-(`pymssql`, `pyodbc`) is **not** covered yet: both are statically-defined
-extension types, so they need a vendored fork too.
+SQL Server drivers (`pymssql`, `pyodbc`) are **not** covered yet: queries sent
+through them are not checked.
 
 ---
 
@@ -596,8 +589,8 @@ demos/
   foreign_main_script.py      the world-writable main script, judged before it runs
   untrusted_code_demo.py      untrusted-code loads from stdin / argv / env / make_vuln
   taint_gauntlet.py           taint through 15 transformations
-  driver_sinks.py             SQL / LDAP injection through the bundled DB drivers
-  es_compat.py                inert stand-ins so every demo also runs on stock CPython
+  driver_sinks.py             SQL / LDAP injection through the supported DB drivers
+  es_compat.py                inert stand-ins so every demo also runs on plain python3
 priv/                         privilege escalation, and why it does not work here
   file.txt / read_value.py    the minimal data case: read a value from a file
                               another account can write (setup makes it so)
@@ -612,16 +605,13 @@ requirements.txt              Flask (the only dependency)
 ```
 
 `demo_credentials.py` is a separate module rather than a constant in `app.py`,
-and that is not arbitrary. The `hardcoded` source is AST-driven and hooks
-exactly one place, the `finally:` block of the builtin `compile()`. Two
-consequences follow, and neither is a bug:
+and that is not arbitrary. The `hardcoded` source scans a module's source when
+it is imported and compiled. Two consequences follow, and neither is a bug:
 
-1. `python app.py` runs the top-level script through `PyRun_FileExFlags`, which
-   never calls the builtin `compile()`. A literal in the main script is
-   therefore **not** scanned. An imported module is, because the import
-   machinery compiles it with the builtin.
-2. A `__pycache__` hit performs no compile at all, so the literals are seen on
-   the first uncached import only. `rm -rf __pycache__` and restart to watch it
+1. The script you run directly (`python app.py`) is **not** scanned, so a
+   literal in the main script is not seen. An imported module is.
+2. A `__pycache__` hit means the module is not compiled again, so the literals
+   are seen on the first uncached import only. `rm -rf __pycache__` and restart to watch it
    fire again.
 
 The file also carries two values that are deliberately **not** matched, sitting
@@ -631,16 +621,15 @@ design - matching it would drag in every English sentence assigned to a
 variable whose name ends in `password`) and a placeholder like `changeme`.
 
 The `demos/` scripts import `es_compat`, which supplies no-op versions of
-`make_vuln` / `check_vuln` / `get_taint` when the interpreter has no taint
-engine. That is what lets one unchanged file run on both runtimes and report
+`make_vuln` / `check_vuln` / `get_taint` when the runtime has no taint
+tracking. That is what lets one unchanged file run on both runtimes and report
 which one it is on. Those three builtins are the only es-python API any code
 here touches: the web app itself calls nothing, and the endpoints are protected
 without a single application-level change.
 
 The landing page is rendered without Jinja2 on purpose: Jinja pulls in the
-compiled `markupsafe._speedups` extension, whose stock ABI is incompatible with
-es-python's instrumented string layout. Pure-Python rendering keeps the demo
-crash-proof under every es-python build.
+compiled `markupsafe._speedups` extension, which is not supported under
+es-python. Pure-Python rendering keeps the demo working under every runtime.
 
 ---
 

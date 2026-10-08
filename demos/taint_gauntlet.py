@@ -20,8 +20,8 @@ different encoding and a different byte width from the secret, and shares no
 substring with it. Then send it to a socket.
 
 es-python still reports it as the secret leaving, and a raise rule still blocks
-it. Taint here is a property of the value, maintained inside the C interpreter
-through each operation, not a pattern anybody is matching against.
+it. Taint here is a property of the value, followed through each operation as
+the program runs, not a pattern anybody is matching against.
 
 Why this is the hard case
 -------------------------
@@ -38,14 +38,14 @@ Why this is the hard case
   round-trips are exactly where static models are over-approximated into
   uselessness or quietly give up.
 
-* **Python-level RASP** hooks the functions it knows. `str.translate`,
-  `memoryview.tobytes`, `bytes.hex` and a dict-key round trip are C-level
-  built-in operations: an agent written in Python cannot patch them and has
-  nowhere to attach per-object state, so taint is lost at the first one and
-  the rest of the chain is invisible.
+* **Python-level RASP** wraps the functions it knows. `str.translate`,
+  `memoryview.tobytes`, `bytes.hex` and a dict-key round trip are built-in
+  operations it cannot wrap, and a plain `str` has nowhere to carry per-object
+  state, so taint is lost at the first one and the rest of the chain is
+  invisible.
 
-es-python propagates taint at the same level the transformation happens: in the
-C implementation of the operation itself. Every step in this chain was chosen
+es-python follows the value through each operation as the program runs:
+detection runs inside the program, not beside it. Every step in this chain was chosen
 because it is verified to carry taint through - run the demo and watch the
 `tainted` column stay True from step 0 to step 15.
 
@@ -225,7 +225,7 @@ def main():
         print("         The make_vuln source is off on this machine - enable it in the")
         print("         machine config, or run locally with ES2_MAKE_SOCKET_VULN=1.")
     else:
-        print(" RESULT: the payload left the process. Stock CPython.")
+        print(" RESULT: the payload left the process. Plain python3.")
         print("         Nothing was recorded, and nothing on the wire resembles the")
         print("         secret, so nothing downstream can reconstruct what was lost.")
     return 0

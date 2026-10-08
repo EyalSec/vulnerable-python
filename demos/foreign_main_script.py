@@ -25,7 +25,7 @@ so the event happens before any user code at all:
     event   run script
 
 Under an armed raise rule the script is aborted rather than run. Note this is
-one of the very few checks that deliberately fires DURING interpreter startup:
+one of the very few checks that deliberately fires DURING startup:
 the ordinary "wait until user code has started" guard is skipped, because
 "block untrusted code" is meaningless if it waits for the untrusted code to
 start.
@@ -37,7 +37,7 @@ already run by then. So this file has two modes:
 
   * plain run (what you type)  - copies itself to a private temp directory,
     makes the COPY mode 0666, and runs that copy as a main script in a child
-    process. The copy is what the interpreter judges.
+    process. The copy is what es-python judges.
   * `--planted` (the child)    - reports that it is running, and from where.
 
 The parent is an ordinary file you own, so the parent process produces no
@@ -48,7 +48,7 @@ Run it
     ES2_MAKE_FOREIGN_VULN=1 es-python demos/foreign_main_script.py
     ES2_MAKE_FOREIGN_VULN=1 ES2_RAISE=1 es-python demos/foreign_main_script.py
 
-Under stock CPython the child runs and nothing anywhere records that the script
+Under plain python3 the child runs and nothing anywhere records that the script
 that just ran was writable by every account on the machine.
 """
 import os
@@ -71,7 +71,7 @@ def planted_child():
         print(" under es-python this file was judged as it was loaded, before the first")
         print(" statement of the script executed - the parent reports the outcome.")
     else:
-        print(" stock CPython judged nothing: the interpreter ran this file without")
+        print(" plain python3 judged nothing: it ran this file without")
         print(" recording, or being able to tell you, who was able to write it.")
     return 0
 
@@ -121,7 +121,7 @@ def main():
             print("          machine - enable 'foreign' in the machine config, or run")
             print("          locally with ES2_MAKE_FOREIGN_VULN=1)")
         else:
-            print(" RESULT: the script ran. Stock CPython.")
+            print(" RESULT: the script ran. Plain python3.")
             print("         No event, and no way for the application to find out that the")
             print("         file the interpreter just executed was writable by anyone.")
     finally:

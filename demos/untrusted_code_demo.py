@@ -8,7 +8,7 @@
 
 The foreign gate's third job. `demos/uncatchable_plugin.py` shows a code load
 whose bytes came from a foreign-writable FILE, reported as `foreign-code:<path>`.
-The same instrumentation covers code loads whose bytes came from anywhere else:
+The same check covers code loads whose bytes came from anywhere else:
 
     stdin           ->  untrusted-code:<stdin>
     argv            ->  untrusted-code:argv
@@ -139,7 +139,7 @@ def main():
         print("    (DEMO_CODE='z = 3' ... to include it)")
     print()
 
-    # 4. make_vuln: the escape hatch for data the interpreter cannot know is
+    # 4. make_vuln: the escape hatch for data es-python cannot know is
     #    untrusted - a row from your own database, a queue message, a template
     #    out of a CMS. Taint number 7 here, so a dashboard rule can be scoped
     #    to this one source.
@@ -172,7 +172,7 @@ def main():
         print("         source gate you want, and add a raise rule to refuse the load:")
         print("           Source: stdin|env|argv|7   Event: exec   Mode: Raise")
     else:
-        print(" RESULT: every load ran. Stock CPython.")
+        print(" RESULT: every load ran. Plain python3.")
         print("         exec() saw the filename <string> in every case, so nothing")
         print("         anywhere recorded which of these five strings came from an")
         print("         attacker and which one is a literal in this file.")

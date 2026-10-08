@@ -37,7 +37,7 @@ Run it
     es-python priv/escalate_syspath.py --raise    # protect: the load is refused
 
 `--raise` arms the raise on the child that performs the load, not on the parent
-(see _privlib.child_env for why). Under stock CPython the planted module is
+(see _privlib.child_env for why). Under plain python3 the planted module is
 imported and nothing records that the directory it came from was writable by
 another account.
 """
@@ -62,7 +62,7 @@ print("{CHILD_OK}", app_config.DB_URL) # only reached if the load was allowed
 
 PLANTED = '''\
 # Planted by a less-privileged account into a writable sys.path directory.
-# Under stock CPython this runs with the importing process's full authority.
+# Under plain python3 this runs with the importing process's full authority.
 import os
 DB_URL = "postgres://prod/main"
 # a real attacker would do their work here; we only prove we ran:
@@ -117,7 +117,7 @@ def main():
             print("         (nothing reported? enable 'foreign' in the machine config,")
             print("          or run locally with ES2_MAKE_FOREIGN_VULN=1)")
         else:
-            print(" RESULT: the planted module ran. Stock CPython.")
+            print(" RESULT: the planted module ran. Plain python3.")
             print("         No event, and no way for the process to learn that the module")
             print("         it imported came from a directory anyone could write.")
     finally:

@@ -7,8 +7,8 @@
 # READ THIS BEFORE JUDGING THE OUTPUT
 # -----------------------------------
 # Whether a sink actually raises is decided by the machine config your EyalSec
-# dashboard pushes, NOT by this script. ES2_RAISE=1 is only a fallback, and the
-# interpreter honours it only when the machine has no raise rules of its own.
+# dashboard pushes, NOT by this script. ES2_RAISE=1 is only a fallback, and
+# es-python honours it only when the machine has no raise rules of its own.
 # So the second run of each pair aborts the flow only if:
 #
 #   * the machine has a matching raise rule (the supported path), or
@@ -25,7 +25,7 @@
 # Usage:
 #   ./run-demos.sh                       # uses ~/opt/eyalsec/bin/python3.13
 #   ./run-demos.sh /path/to/python3.13   # explicit interpreter
-#   ./run-demos.sh python3               # stock CPython, to see the contrast
+#   ./run-demos.sh python3               # plain python3, to see the contrast
 #
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -48,7 +48,7 @@ run() {
 }
 
 # Demos 1 and 3 use make_vuln(), which needs at least one taint source armed for
-# the engine to be active. The socket source is the lightest one.
+# taint tracking to be active. The socket source is the lightest one.
 #
 # Demo 2 arms ONLY the foreign source on purpose. Adding ES2_MAKE_FILE_VULN
 # would taint every file the interpreter reads, including its own cached .pyc
@@ -111,12 +111,12 @@ Compare the two RESULT lines in each pair.
                 them:
                   demo 1:  Source 1        Event sendall  Mode Raise
                   demo 2:  Source foreign  Event exec     Mode Raise
-                  demo 2b: Source foreign  Event run_mod  Mode Raise
+                  demo 2b: Source foreign  Event run script  Mode Raise
                   demo 2c: Source stdin    Event exec     Mode Raise
                   demo 3:  Source 7        Event sendall  Mode Raise
 
   both block -> this machine already carries the matching raise rules.
 
-Under stock CPython every run above succeeds silently, with nothing detected
+Under plain python3 every run above succeeds silently, with nothing detected
 and nothing recorded. That is the point.
 EOF

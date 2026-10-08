@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.13
-"""SQL injection through the real database drivers es-python ships.
+"""SQL injection through the real database drivers es-python covers.
 
   ############################################################################
   #  Sends deliberately injectable SQL. Point it at a THROWAWAY database.    #
@@ -9,34 +9,24 @@ Why this demo is separate from app.py
 -------------------------------------
 Every other endpoint in this repository reaches its sink with nothing but the
 standard library, so `pip install flask` is the whole setup. These sinks are
-different: they live inside compiled database drivers, and reaching one needs
+different: they are in third-party database drivers, and reaching one needs
 both the driver and a database server to connect to. So they get a script you
 point at whatever servers you have, and it skips whatever you do not.
 
 What makes these sinks worth a demo of their own
 ------------------------------------------------
 The stdlib `sqlite3` sink proves the idea. These prove it is not a toy: the
-same detection is compiled into the drivers real applications actually use.
-es-python vendors each driver (see EyalSec_Cpython/third_party/) with a
-C or Cython sink on the statement string, and installs the instrumented build
-into the shipped prefix. `_eyalsec_syssite.hoist_instrumented()` then puts that
-directory ahead of user-site on sys.path at every startup, so `import psycopg2`
-loads the instrumented copy even after a later `pip install psycopg2` drops a
-vanilla wheel into ~/.local.
+same detection covers the drivers real applications actually use, checked at
+the statement each driver sends.
 
-  (Consequence worth knowing: `pip show psycopg2` can report the vanilla copy
-  while `import psycopg2` loads the instrumented one. The import is what
-  carries the sink, so the sink is intact - the metadata is just reporting the
-  distribution that got shadowed.)
-
-| Database   | Driver          | Sink                                  |
-|------------|-----------------|---------------------------------------|
-| PostgreSQL | psycopg2        | `_psyco_curs_execute` (C)             |
-| PostgreSQL | psycopg v3      | the 4 PGconn query wrappers (C)       |
-| MySQL      | mysqlclient     | `_mysql_ConnectionObject_query` (C)   |
-| MariaDB    | mariadb         | `MrdbCursor_parse` (C)                |
-| Oracle     | oracledb        | `BaseCursorImpl._prepare` (Cython)    |
-| LDAP       | python-ldap     | `l_ldap_search_ext` (C)               |
+| Database   | Driver          | Checked at           |
+|------------|-----------------|----------------------|
+| PostgreSQL | psycopg2        | statement execute    |
+| PostgreSQL | psycopg v3      | statement execute    |
+| MySQL      | mysqlclient     | statement execute    |
+| MariaDB    | mariadb         | statement execute    |
+| Oracle     | oracledb        | statement prepare    |
+| LDAP       | python-ldap     | search filter        |
 
 THE POINT OF THE SECOND QUERY IN EACH PAIR
 ------------------------------------------
@@ -86,7 +76,7 @@ from es_compat import ES_PYTHON, banner, make_vuln  # noqa: E402
 
 # The attacker-controlled value. Under es-python it is explicitly tainted, so
 # the demo does not depend on which taint sources happen to be armed on this
-# machine. Under stock CPython make_vuln is an inert stand-in and this is just
+# machine. Under plain python3 make_vuln is an inert stand-in and this is just
 # a string - the injection still works, nothing reports it.
 EVIL = make_vuln("x' OR '1'='1", 1)
 
@@ -106,7 +96,7 @@ def run_pair(target, cursor, concat_sql, param_sql, param_args):
     record(target, "ran",
            "injectable statement reported; parameterized form silent"
            if ES_PYTHON else
-           "both statements ran, neither reported (stock CPython)")
+           "both statements ran, neither reported (plain python3)")
 
 
 def demo_psycopg2():
@@ -247,9 +237,9 @@ def demo_ldap():
 
 
 def main():
-    banner("SQL / LDAP injection through the bundled drivers")
+    banner("SQL / LDAP injection through the supported drivers")
     if not ES_PYTHON:
-        print("  Running under stock CPython: every injection below succeeds")
+        print("  Running under plain python3: every injection below succeeds")
         print("  and NOTHING is reported. That is the control case.\n")
     else:
         print("  Running under es-python: each injectable statement is")

@@ -1,9 +1,9 @@
-"""Stock-CPython fallbacks for the es-python taint builtins.
+"""Plain-python3 fallbacks for the es-python taint builtins.
 
 The demos in this directory are meant to run **unchanged** under both
-interpreters, which is the entire point of this repository. Under es-python,
+runtimes, which is the entire point of this repository. Under es-python,
 `make_vuln` / `check_vuln` / `get_taint` are real builtins provided by the
-interpreter. Under stock CPython they do not exist, so importing this module
+runtime. Under plain python3 they do not exist, so importing this module
 installs inert stand-ins: `make_vuln` returns the object untouched, nothing is
 ever tainted, and every demo still runs to completion - silently vulnerable,
 exactly like the production app it stands in for.
@@ -11,10 +11,6 @@ exactly like the production app it stands in for.
     from es_compat import make_vuln, check_vuln, get_taint, ES_PYTHON
 
 `ES_PYTHON` is True only when the real builtins were found.
-
-Note: a "fast tier" es-python build (the stock-speed build served to users with
-the fast-Python grant) also has no `make_vuln`, so it lands on the fallbacks
-too. That is correct - that build does not track taint.
 """
 
 try:
@@ -22,11 +18,11 @@ try:
     check_vuln = check_vuln        # noqa: F821, PLW0127
     get_taint = get_taint          # noqa: F821, PLW0127
     ES_PYTHON = True
-except NameError:                  # stock CPython
+except NameError:                  # plain python3
     ES_PYTHON = False
 
     def make_vuln(obj, taint=None):
-        """No-op stand-in: stock CPython has no taint engine."""
+        """No-op stand-in: plain python3 has no taint tracking."""
         return obj
 
     def check_vuln(obj):
@@ -37,9 +33,9 @@ except NameError:                  # stock CPython
 
 
 def banner(title):
-    """Print a heading that states which interpreter is actually running."""
+    """Print a heading that states which runtime is actually running."""
     runtime = "es-python (taint tracking ACTIVE)" if ES_PYTHON else \
-              "stock CPython (no taint tracking - silently vulnerable)"
+              "plain python3 (no taint tracking - silently vulnerable)"
     print("=" * 78)
     print(f" {title}")
     print(f" runtime: {runtime}")

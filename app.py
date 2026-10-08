@@ -11,22 +11,23 @@ vulnerable-python - an intentionally vulnerable demo app for EyalSec.
 
 Why this exists
 ---------------
-EyalSec ships `es-python`, a drop-in CPython that performs dynamic taint
-tracking from untrusted *sources* to dangerous *sinks* inside the C-level
-interpreter. This app is a live target for it.
+EyalSec ships `es-python`, a security-instrumented Python runtime that tracks
+untrusted data from *sources* to dangerous *sinks* as the program runs.
+Detection runs inside the program, not beside it. This app is a live target
+for it.
 
 Run this exact file two ways:
 
-  * Under stock CPython  -> it is a normal, silently exploitable web app.
+  * Under plain python3  -> it is a normal, silently exploitable web app.
                             Nothing is logged. The vulnerability just works.
   * Under es-python      -> every attack that reaches a sink is reported to
                             the EyalSec dashboard (Observe mode), or aborted
                             with a RuntimeError at the sink (Protect mode,
                             ES2_RAISE=1). The code did not change - the
-                            interpreter did.
+                            runtime did.
 
 The code below is plain standard-library Python. It is byte-for-byte identical
-regardless of which interpreter runs it - that is the whole point. EyalSec adds
+regardless of which runtime runs it - that is the whole point. EyalSec adds
 zero source changes to the app it protects.
 
 Each route demonstrates exactly one (taint source -> sink) pair. See the
@@ -313,10 +314,9 @@ def redos():
     24 takes 6.2s on the box this was measured on.
 
     EyalSec reports: tainted pattern at the regex-compile sink, plus `redos`
-    once the engine's step counter crosses its threshold. Recorded blind spot:
-    the counter increments per opcode dispatch, and a blowup living entirely
-    inside a single-width repeat (SRE_OP_REPEAT_ONE) does not dispatch, so it
-    can stay under the threshold.
+    once the match runs past its work threshold. Known blind spot: a blowup
+    that lives entirely inside a single-character repeat (such as `a*`) can
+    stay under the threshold.
     """
     pattern = request.args.get("pattern", "hello")
     text = request.args.get("text", "hello world")
@@ -508,7 +508,7 @@ def weak_random_token():
     Try:  /weak-random
     EyalSec reports: `predictable token` at the socket send, origin
     `weak-random:getrandbits`. Arm with --make-weakrandom-vuln (flag/env only;
-    there is no dashboard category for it). Instrumenting getrandbits covers
+    there is no dashboard category for it). The getrandbits source covers
     randrange / randint / choice / shuffle / sample / randbytes too - they all
     route through it. `uuid4` is deliberately NOT covered: it uses os.urandom
     and is a correct choice.
@@ -530,8 +530,8 @@ def credential_exfil():
     Try:  /credential-exfil
     EyalSec reports: `credential exfiltration` at the socket send, origin
     `hardcoded:demo_credentials.py:<line>`. Arm with --make-secret-vuln.
-    NOTE: the scan hooks the builtin compile(), so it runs on the first,
-    UNCACHED import of demo_credentials.py. `rm -rf __pycache__` and restart
+    NOTE: the scan runs when a module is compiled on import, so it runs on the
+    first, UNCACHED import of demo_credentials.py. `rm -rf __pycache__` and restart
     to see it fire again - a __pycache__ hit performs no compile at all.
     """
     key = demo_credentials.STRIPE_API_KEY
@@ -549,7 +549,7 @@ def credential_logging():
     read by everyone with log access.
 
     Try:  /credential-logging
-    EyalSec reports: `credential logging`. The logging hook inspects
+    EyalSec reports: `credential logging`. The logging sink inspects
     record.msg and each of record.args, NOT record.getMessage(), so it sees
     the secret even though this call never formats the string itself.
     """
@@ -615,8 +615,7 @@ def source_tls_unverified():
     EyalSec reports: origin `ssl-unverified:<host>`, or
     `ssl-unverified:<host> (hostname-unchecked)` when the chain is verified
     but check_hostname is off. This one folds under the SOCKET gate
-    (ES2_MAKE_SOCKET_VULN) and is the only new source alive in a socketonly
-    build. Needs outbound network; returns a plain error if there is none.
+    (ES2_MAKE_SOCKET_VULN). Needs outbound network; returns a plain error if there is none.
     """
     host = request.args.get("host", "example.com")
     ctx = ssl.create_default_context()
@@ -703,8 +702,8 @@ def source_shadow_import():
 
 FOREIGN = foreign_lab.build()
 
-# es-python builtins, with inert stand-ins so this file still runs on stock
-# CPython. Same trick as demos/es_compat.py, kept local so app.py imports
+# es-python builtins, with inert stand-ins so this file still runs under
+# plain python3. Same trick as demos/es_compat.py, kept local so app.py imports
 # nothing from demos/.
 _make_vuln = getattr(builtins, "make_vuln", lambda obj, taint=None: obj)
 _get_taint = getattr(builtins, "get_taint", lambda obj: None)
@@ -821,8 +820,8 @@ def foreign_pyc():
     detector uses.
 
     Try:  /foreign/pyc
-    EyalSec reports: `foreign-code:<path>.pyc` at the bytecode load. The
-    importlib hook covers the sourceless path as well as the source one.
+    EyalSec reports: `foreign-code:<path>.pyc` at the bytecode load. Loads
+    with no source on disk are covered as well as ordinary ones.
     """
     import py_compile
 
@@ -847,9 +846,9 @@ def foreign_compile():
     """SOURCE foreign-code -> `compile(src, path, "exec")` with a foreign path.
 
     An app that implements its own plugin loading does not call `import`; it
-    reads a file and compiles it. The builtin `compile()` is instrumented for
-    exactly that, on the FILENAME argument, so a hand-rolled loader is covered
-    the same way importlib is.
+    reads a file and compiles it. es-python checks the FILENAME argument of
+    the builtin `compile()` for exactly that, so a hand-rolled loader is
+    covered the same way importlib is.
 
     Try:  /foreign/compile
     EyalSec reports: `compile`, origin `foreign-code:<path>`. The source string
@@ -878,7 +877,7 @@ def foreign_exec_file():
     The load with no filename at all. The bytes were read as DATA, so by the
     time they reach exec the interpreter is looking at an anonymous string and
     every path-based control - audit hooks, allowlists, EDR file rules, a SAST
-    pass over the repo - has nothing to key on. es-python walks the string's
+    pass over the repo - has nothing to key on. es-python follows the string's
     taint chain back to the read that produced it and reports the original
     path, so this lands as the same `foreign-code:<path>` event that a direct
     import would have produced.
@@ -945,8 +944,8 @@ def foreign_data_read():
 def foreign_data_readlines():
     """SOURCE foreign file read -> SINK os.system  =>  command injection.
 
-    `readlines()` rather than `read()`. It is a different C path with its own
-    taint marking and its own origin stamping, so it gets its own route: a
+    `readlines()` rather than `read()`. It is a separate read path with its
+    own taint marking and its own origin reporting, so it gets its own route: a
     per-line read used to reach the sink with the origin missing, and the
     dashboard would attribute the finding to the line of code instead of to the
     file.
@@ -971,8 +970,7 @@ def foreign_data_os_read():
 
     Raw `os.open` + `os.read`, with no file object anywhere. The verdict is
     made on the file DESCRIPTOR (`fstat`), which is why this still works when
-    the code never touches a path after the open - and why a socketonly build
-    cannot do it: that variant compiles the file/foreign instrumentation out.
+    the code never touches a path after the open.
 
     Try:  /foreign/data/os-read
     EyalSec reports: a tainted argument at the subprocess sink.
@@ -995,9 +993,9 @@ def foreign_data_mmap():
     """SOURCE foreign mmap -> SINK sqlite3.execute  =>  SQL injection.
 
     A memory-mapped foreign file. There is no `read()` call at all - the bytes
-    arrive by page fault - so instrumenting the read APIs would miss this
-    entirely. The mmap object records the foreignness of its fd at map time and
-    taints every slice taken from it.
+    arrive by page fault - so a tool watching read calls would miss this
+    entirely. es-python judges the file when it is mapped and taints every
+    slice taken from it.
 
     Try:  /foreign/data/mmap
     EyalSec reports: a tainted SQL statement at the sqlite3 sink.
@@ -1173,7 +1171,7 @@ def foreign_untrusted_tainted():
     """SOURCE make_vuln -> SINK exec  =>  a source-scoped untrusted code load.
 
     `make_vuln(value, n)` tags a value with taint number n, which is how you
-    mark something the interpreter has no way to know is untrusted - a field
+    mark something es-python has no way to know is untrusted - a field
     out of your own database, a message off a queue, a template from a CMS. The
     code load is reported with that number, so a dashboard rule can be scoped
     to this one source and raise on it while everything else stays in observe
@@ -1182,7 +1180,7 @@ def foreign_untrusted_tainted():
     Try:  /foreign/untrusted/tainted
           /foreign/untrusted/tainted?n=7&code=6*7
     EyalSec reports: `exec (untrusted code)`, origin `untrusted-code:make_vuln`,
-    carrying taint number n. Inert on stock CPython, where make_vuln is a
+    carrying taint number n. Inert under plain python3, where make_vuln is a
     no-op stand-in.
     """
     n = int(request.args.get("n", "7"))
@@ -1302,11 +1300,9 @@ def foreign_explain():
 
 
 # ===========================================================================
-# THIRD-PARTY ADAPTER SINKS
-# Non-stdlib libraries are covered by declarative adapters - one row each in
-# Lib/_eyalsec_hooks/registry.py, attached lazily through a sys.meta_path
-# finder. No vendored fork, no C change. 42 rows ship today; the ones below
-# are the ones that need no database server to reach.
+# THIRD-PARTY LIBRARY SINKS
+# es-python also covers popular non-stdlib libraries; 42 library sinks ship
+# today. The ones below are the ones that need no database server to reach.
 #
 # Each route degrades to a plain message when the library is not installed,
 # so the app runs with flask alone.
@@ -1334,11 +1330,10 @@ def adapter_jinja2():
     EyalSec reports: `ssti jinja2`.
 
     NOTE: this route compiles the template and deliberately does NOT render
-    it. The adapter fires at from_string, so compiling is enough to show the
-    sink - and rendering would pull in markupsafe's C speedups, whose stock
-    PyUnicode layout is incompatible with es-python's string ABI and segfaults
-    at render. Any app meant to run under es-python should avoid C-extension
-    template engines. Same reason the landing page here is pure Python.
+    it. The sink fires at from_string, so compiling is enough to show it - and
+    rendering would pull in markupsafe's compiled speedups extension, which is
+    not supported under es-python. Same reason the landing page here is pure
+    Python.
     """
     jinja2, missing = _optional("jinja2")
     if missing:
@@ -1346,7 +1341,7 @@ def adapter_jinja2():
     template = request.args.get("template", "hello {{ name }}")
     jinja2.Environment().from_string(template)  # <-- SINK (compiled, not rendered)
     return {"template": template, "compiled": True, "rendered": False,
-            "why_not_rendered": "markupsafe C speedups segfault under es-python"}
+            "why_not_rendered": "markupsafe compiled speedups are not supported under es-python"}
 
 
 @app.get("/adapter/mark-safe")
@@ -1378,7 +1373,7 @@ def adapter_yaml():
 
     Try:  /adapter/yaml?doc=a: 1
           /adapter/yaml?doc=!!python/object/apply:os.system ["id"]
-    EyalSec reports: `yaml unsafe load`. The adapter's predicate checks the
+    EyalSec reports: `yaml unsafe load`. The sink's predicate checks the
     loader, so a correct `yaml.safe_load` call is not reported.
     """
     yaml, missing = _optional("yaml", "PyYAML")
@@ -1398,8 +1393,8 @@ def adapter_jwt():
 
     Try:  /adapter/jwt?token=<any jwt>
     EyalSec reports: `jwt unverified` (predicate: signature verification off)
-    or `jwt none alg` (predicate: the call accepts `alg: none`). Two adapter
-    rows, same patched method, different predicates.
+    or `jwt none alg` (predicate: the call accepts `alg: none`). Two checks
+    on the same call, different predicates.
     """
     jwt, missing = _optional("jwt", "PyJWT")
     if missing:
@@ -1449,7 +1444,7 @@ def adapter_mongo():
     (bounded: depth 6, 512 nodes) and yields every $-prefixed key plus the
     VALUE of $where / $expr / $function / $accumulator / $jsonSchema - so it
     reports the dangerous operators, not every user-supplied field.
-    No server needed: the adapter fires when find() is called.
+    No server needed: the sink fires when find() is called.
     """
     pymongo, missing = _optional("pymongo")
     if missing:
@@ -1477,8 +1472,8 @@ def adapter_redis():
     Try:  /adapter/redis?script=return 1
           /adapter/redis?script=return redis.call('KEYS', '*')
     EyalSec reports: `nosql redis`. Worth reading as a coverage decision:
-    Redis.execute_command was deliberately dropped from the registry because
-    it fired on 100% of correct traffic. Only the genuine code-injection sink
+    Redis.execute_command is deliberately not a sink, because
+    it would fire on 100% of correct traffic. Only the genuine code-injection sink
     is kept.
     """
     redis, missing = _optional("redis")
@@ -1593,7 +1588,7 @@ ENDPOINTS = [
     ("Foreign gate: untrusted data from a foreign file", "GET",
      "/foreign/data/mmap", "/foreign/data/mmap",
      "foreign mmap", "sqlite3.execute", "Bytes that arrive by page fault",
-     "Tainted statement - no read() call exists to instrument"),
+     "Tainted statement - no read() call happens at all"),
     ("Foreign gate: untrusted data from a foreign file", "GET",
      "/foreign/data/parent-dir", "/foreign/data/parent-dir",
      "foreign parent dir", "sqlite3.execute", "0600 file in a world-writable directory",
@@ -1736,7 +1731,7 @@ CLI_DEMOS = [
      "ES_DEMO_PG_DSN=... es-python demos/driver_sinks.py",
      "tainted value -> psycopg2 / psycopg3 / mysqlclient / mariadb / "
      "oracledb / python-ldap",
-     "The injectable statement is reported at each driver's own C or Cython "
+     "The injectable statement is reported at each driver's own statement "
      "sink; the bound-parameter form beside it stays silent. Needs a "
      "throwaway database - skips cleanly with nothing configured"),
 ]
@@ -1747,8 +1742,8 @@ def index():
     groups = {}
     for row in ENDPOINTS:
         groups.setdefault(row[0], []).append(row[1:])
-    # Rendered in pure Python (see landing.py) to stay crash-proof under
-    # es-python, whose string ABI is incompatible with markupsafe's C speedups.
+    # Rendered in pure Python (see landing.py): markupsafe's compiled speedups
+    # are not supported under es-python.
     return Response(landing.render(groups, CLI_DEMOS), mimetype="text/html")
 
 

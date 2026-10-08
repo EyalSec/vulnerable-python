@@ -1,10 +1,9 @@
 """Pure-Python landing page renderer.
 
-Deliberately does NOT use Jinja2 / markupsafe. Those pull in a compiled C
-extension (markupsafe._speedups) whose stock ABI is incompatible with
-es-python's instrumented string layout, which segfaults on render. Building the
-one HTML page with stdlib html.escape keeps this demo crash-proof under every
-es-python build, while the ENDPOINTS catalog in app.py stays the single source
+Deliberately does NOT use Jinja2 / markupsafe. Those pull in a compiled
+extension (markupsafe._speedups) that is not supported under es-python.
+Building the one HTML page with stdlib html.escape keeps this demo working
+under every runtime, while the ENDPOINTS catalog in app.py stays the single source
 of truth.
 """
 import html
@@ -125,7 +124,7 @@ _HEAD = """<!doctype html>
     <h1>One app. Every injection. See what EyalSec catches.</h1>
     <p class="lede">This is a deliberately insecure Python web app. Each endpoint carries a
       single, real vulnerability wired from a distinct <b>taint source</b> into a distinct
-      <b>sink</b>. Run it under stock Python and it is a normal, silently exploitable app.
+      <b>sink</b>. Run it under plain python3 and it is a normal, silently exploitable app.
       Run the <b>same unchanged code</b> under <b>es&#8209;python</b> and every attack that
       reaches a sink appears on your EyalSec dashboard, or aborts at the sink.</p>
 
@@ -138,13 +137,13 @@ _HEAD = """<!doctype html>
 
   <div class="runtimes">
     <div class="card stock">
-      <h3>stock CPython</h3>
+      <h3>plain python3</h3>
       <p>The app just works, and quietly does whatever the attacker asked. No signal, no
         record. This is what every unprotected Python service does today.</p>
     </div>
     <div class="card es">
       <h3>es-python (EyalSec)</h3>
-      <p>Byte-identical app, instrumented interpreter. Tainted data reaching a sink is
+      <p>Byte-identical app, security-instrumented Python runtime. Tainted data reaching a sink is
         reported to the dashboard (Observe), or raises a RuntimeError at the sink
         (Protect, <span style="font-family:var(--mono);color:var(--gold)">ES2_RAISE=1</span>).</p>
     </div>
@@ -160,25 +159,25 @@ _HEAD = """<!doctype html>
 _TAIL = """</div></section>
 
 <section class="block"><div class="wrap">
-  <h2>SQL injection across every shipped driver</h2>
+  <h2>SQL injection across every supported driver</h2>
   <p class="sub">The live <code style="color:var(--gold);font-family:var(--mono)">/sqli</code>
     route uses stdlib sqlite3 so it runs anywhere with no database server. es&#8209;python
-    ships the dominant third-party drivers too, each with the identical statement-string
+    covers the dominant third-party drivers too, each with the identical statement-string
     sink. Point any of these at a real database and the same event fires.</p>
   <table class="drivers">
-    <tr><th>Database</th><th>Driver</th><th>Sink site</th></tr>
-    <tr><td>SQLite</td><td><code>sqlite3</code> (stdlib, live here)</td><td>cursor execute</td></tr>
-    <tr><td>PostgreSQL</td><td><code>psycopg2</code></td><td>_psyco_curs_execute (C)</td></tr>
-    <tr><td>PostgreSQL</td><td><code>psycopg</code> v3</td><td>PGconn query wrappers (C)</td></tr>
-    <tr><td>MySQL</td><td><code>mysqlclient</code></td><td>_mysql query (C)</td></tr>
-    <tr><td>MariaDB</td><td><code>mariadb</code></td><td>MrdbCursor_parse (C)</td></tr>
-    <tr><td>Oracle</td><td><code>oracledb</code></td><td>BaseCursorImpl._prepare (Cython)</td></tr>
+    <tr><th>Database</th><th>Driver</th><th>Checked at</th></tr>
+    <tr><td>SQLite</td><td><code>sqlite3</code> (stdlib, live here)</td><td>statement execute</td></tr>
+    <tr><td>PostgreSQL</td><td><code>psycopg2</code></td><td>statement execute</td></tr>
+    <tr><td>PostgreSQL</td><td><code>psycopg</code> v3</td><td>statement execute</td></tr>
+    <tr><td>MySQL</td><td><code>mysqlclient</code></td><td>statement execute</td></tr>
+    <tr><td>MariaDB</td><td><code>mariadb</code></td><td>statement execute</td></tr>
+    <tr><td>Oracle</td><td><code>oracledb</code></td><td>statement prepare</td></tr>
   </table>
 </div></section>
 
 <section class="block" id="run"><div class="wrap">
   <h2>How to run</h2>
-  <p class="sub">Same file, two interpreters. Install the one dependency, then choose a runtime.</p>
+  <p class="sub">Same file, two runtimes. Install the one dependency, then choose a runtime.</p>
   <pre class="sh"><span class="c"># 1. install the single dependency (Flask)</span>
 pip install -r requirements.txt
 
@@ -186,7 +185,7 @@ pip install -r requirements.txt
 <span class="c">#           report which library they would need, and nothing breaks</span>
 pip install PyYAML PyJWT SQLAlchemy pymongo redis
 
-<span class="c"># 2a. stock Python - silently vulnerable, no telemetry</span>
+<span class="c"># 2a. plain python3 - silently vulnerable, no telemetry</span>
 python3 app.py
 
 <span class="c"># 2b. es-python, local dev build - arms every taint source and launches the app</span>
@@ -196,7 +195,7 @@ python3 app.py
 <span class="c"># 3. on a real monitored machine: install es-python from your EyalSec</span>
 <span class="c">#    dashboard, arm the taint sources in the machine config, then:</span>
 python3.13 app.py</pre>
-  <p class="sub" style="margin-top:2px">On the obfuscated production build, taint sources are armed from the dashboard
+  <p class="sub" style="margin-top:2px">On an installed es&#8209;python, taint sources are armed from the dashboard
     machine config, not from environment variables. The <code style="color:var(--gold);font-family:var(--mono)">run-eyalsec.sh</code>
     flag path is for a local dev es&#8209;python build.</p>
 </div></section>

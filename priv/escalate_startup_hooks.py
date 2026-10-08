@@ -34,7 +34,7 @@ Run it
     es-python priv/escalate_startup_hooks.py            # observe: reported
     es-python priv/escalate_startup_hooks.py --raise    # protect: refused
 
-Under stock CPython the startup hook runs and nothing records that the directory
+Under plain python3 the startup hook runs and nothing records that the directory
 it was loaded from was writable by another account.
 """
 import os
@@ -121,7 +121,7 @@ def main():
             print("         (nothing reported? enable 'foreign' in the machine config,")
             print("          or run locally with ES2_MAKE_FOREIGN_VULN=1)")
         else:
-            print(" RESULT: the startup hook ran. Stock CPython.")
+            print(" RESULT: the startup hook ran. Plain python3.")
             print("         No event, and no way for the program to learn that code ran")
             print("         at startup from a directory another account could write.")
     finally:

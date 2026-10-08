@@ -7,7 +7,7 @@
 # -----------------------------------
 # Whether a load is actually refused is decided by the raise rules your EyalSec
 # dashboard pushes to the machine, NOT by this script. --raise is a local
-# fallback the interpreter honours only when the machine has no raise rules of
+# fallback es-python honours only when the machine has no raise rules of
 # its own. So the second run of each pair refuses the load only if:
 #
 #   * the machine has a matching raise rule (the supported path), or
@@ -27,7 +27,7 @@
 # Usage:
 #   ./run-priv.sh                       # uses ~/opt/eyalsec/bin/python3.13
 #   ./run-priv.sh /path/to/python3.13   # explicit interpreter
-#   ./run-priv.sh python3               # stock CPython, to see the contrast
+#   ./run-priv.sh python3               # plain python3, to see the contrast
 #
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -61,5 +61,5 @@ pair "4. sitecustomize on a writable startup path"       escalate_startup_hooks.
 echo
 echo "Done. Every path above is the same move - load code from somewhere another"
 echo "account can write - and every one is judged at the load, before the planted"
-echo "code's first line. Point run-priv.sh at stock python3 to see the difference:"
+echo "code's first line. Point run-priv.sh at plain python3 to see the difference:"
 echo "the same escalations run, and nothing records that they happened."

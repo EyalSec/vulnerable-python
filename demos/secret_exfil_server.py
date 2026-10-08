@@ -60,7 +60,7 @@ Run it
     printf 'hello\\n' | nc 127.0.0.1 1024      # echoed back
     printf 'data\\n'  | nc 127.0.0.1 1024      # the exfiltration attempt
 
-Under stock CPython the secret is handed over every time, with no record.
+Under plain python3 the secret is handed over every time, with no record.
 """
 import os
 import socket
@@ -151,7 +151,7 @@ def selftest():
     print(f" tainted      : {check_vuln(SECRET)}")
     print(f" taint number : {get_taint(SECRET)}")
     if not ES_PYTHON:
-        print(" NOTE: no taint engine here - the secret will simply be handed over.")
+        print(" NOTE: no taint tracking here - the secret will simply be handed over.")
     print()
 
     # Port 0 lets the kernel pick a free port, so a selftest never collides with
@@ -199,7 +199,7 @@ def selftest():
             print("         dashboard but not stopped. Arm the rule to block it:")
             print("           Source: 1   Event: sendall   Mode: Raise")
         else:
-            print("         Stock CPython. No event, no record, no way to know.")
+            print("         Plain python3. No event, no record, no way to know.")
     else:
         print(" RESULT: the secret did NOT leave the process.")
         print("         sendall was aborted before the first byte hit the wire.")

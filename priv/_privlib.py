@@ -11,7 +11,7 @@ Every demo in this directory is one shape of the same move: get a privileged
 process to load code from somewhere an unprivileged account can write. The
 helpers here are the parts they all share:
 
-  * `resolve()` locates the es-python interpreter and the repo's `es_compat`
+  * `resolve()` locates the es-python runtime and the repo's `es_compat`
     and `foreign_lab` modules, so a demo can run from anywhere.
   * `run_victim()` runs a victim script in a child process, inheriting the
     caller's environment, and classifies what happened from a first-line
@@ -20,7 +20,7 @@ helpers here are the parts they all share:
     (the dev-build file-taint hazard; see run-priv.sh).
   * `show_predicate()` prints es-python's own foreign predicate, computed in
     pure Python by `foreign_lab.verdict()`, against the file we planted - the
-    same three rules the interpreter applies in C, shown so you can see which
+    same three rules es-python applies at the load, shown so you can see which
     one matched.
 """
 import os
@@ -98,7 +98,7 @@ def run_victim(victim_path, *args, env=None):
 
     The result is one of:
       'ran'      the load succeeded and the victim finished (observe mode, or
-                 stock CPython) - the child printed CHILD_OK.
+                 plain python3) - the child printed CHILD_OK.
       'blocked'  the interpreter started (printed CHILD_START) but the planted
                  load was refused before the victim finished - an armed raise.
       'startup'  the child exited non-zero WITHOUT printing CHILD_START - the
@@ -140,7 +140,7 @@ STARTUP_CAVEAT = "\n".join([
     "         armed raise stops it at the first stdlib marshal load. This is a",
     "         property of this build, not a result for the demo. Re-run without",
     "         --raise to see the load reported; arm the raise on a real machine",
-    "         (its config, or a fast/stock build) to see it refused cleanly.",
+    "         (through its machine config) to see it refused cleanly.",
 ])
 
 

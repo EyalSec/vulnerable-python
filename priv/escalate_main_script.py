@@ -24,7 +24,7 @@ What es-python does
 es-python performs the foreign check on the MAIN SCRIPT, before its first
 statement runs, and reports origin `foreign-code:<path>`, event `run script`.
 Under an armed raise the script is refused rather than run. It is one of the
-very few checks that deliberately fires during interpreter startup: waiting for
+very few checks that deliberately fires during startup: waiting for
 "user code to start" is meaningless when blocking untrusted code is the whole
 point.
 
@@ -33,14 +33,14 @@ How this demo arranges it
 A script cannot make itself world-writable before it is loaded - the check has
 already run. So the parent (an ordinary file you own, which produces no event)
 copies a small victim into a temp directory, makes the COPY mode 0666, and runs
-that copy as a main script in a child. The copy is what the interpreter judges.
+that copy as a main script in a child. The copy is what es-python judges.
 
 Run it
 ------
     es-python priv/escalate_main_script.py            # observe: reported
     es-python priv/escalate_main_script.py --raise    # protect: refused
 
-Under stock CPython the copy runs and nothing records that the file the
+Under plain python3 the copy runs and nothing records that the file the
 interpreter just executed was writable by every account on the box.
 """
 import os
@@ -100,7 +100,7 @@ def main():
             print("         (nothing reported? enable 'foreign' in the machine config,")
             print("          or run locally with ES2_MAKE_FOREIGN_VULN=1)")
         else:
-            print(" RESULT: the script ran. Stock CPython.")
+            print(" RESULT: the script ran. Plain python3.")
             print("         No event, and no way for the application to find out that the")
             print("         file the interpreter just executed was writable by anyone.")
     finally:

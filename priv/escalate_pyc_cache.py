@@ -7,7 +7,7 @@
 
 You locked down the source. `app_config.py` is mode 0644, owned by you, in a
 directory only you can write. But Python does not run the source on the second
-import - it runs the compiled `__pycache__/app_config.cpython-3xx.pyc`, and if
+import - it runs the compiled `__pycache__/app_config.*.pyc`, and if
 THAT file (or the `__pycache__` directory that holds it) is writable by another
 account, they replace the bytecode and your hardened source is never read.
 
@@ -30,14 +30,14 @@ matters, because that is where you will actually find it.
 
 This demo shows the concrete evidence directly: it reads the planted `.pyc` and
 prints `get_taint()` on the bytes. Under es-python that is `'foreign'`; under
-stock CPython it is `None`.
+plain python3 it is `None`.
 
 Run it
 ------
     es-python priv/escalate_pyc_cache.py            # observe: bytes are foreign
     es-python priv/escalate_pyc_cache.py --raise    # protect: marshal refuses
 
-Under stock CPython the replaced bytecode runs and nothing records that the
+Under plain python3 the replaced bytecode runs and nothing records that the
 cache it came from was writable by another account.
 """
 import glob
@@ -137,7 +137,7 @@ def main():
             print("         (nothing reported? enable 'foreign' in the machine config,")
             print("          or run locally with ES2_MAKE_FOREIGN_VULN=1)")
         else:
-            print(" RESULT: the cache loaded. Stock CPython.")
+            print(" RESULT: the cache loaded. Plain python3.")
             print("         get_taint returned None: no way to tell that the bytecode")
             print("         the interpreter ran came from a cache anyone could write.")
     finally:

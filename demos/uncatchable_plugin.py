@@ -51,9 +51,9 @@ detection strategy to its dead end:
   enumerated. It also tells you a file changed, not that your process ran it.
 
 es-python sees it because the taint chain remembers where the bytes came from.
-The `open().read()` stamped the resolved path onto the string. When that string
-reaches `exec`, the interpreter walks the chain back to the origin, stats it,
-finds it writable by another user, and reports:
+The `open().read()` recorded the resolved path with the string. When that
+string reaches `exec`, es-python follows the chain back to the origin, checks
+it, finds it writable by another user, and reports:
 
     foreign-code:/tmp/eyalsec_demo_plugin.py
 
@@ -78,7 +78,7 @@ Run it
 ------
     python3 demos/uncatchable_plugin.py
 
-Under stock CPython the plugin runs and nothing anywhere records that a
+Under plain python3 the plugin runs and nothing anywhere records that a
 world-writable file just executed inside your process.
 """
 import os
@@ -174,7 +174,7 @@ def main():
             print("         enable 'foreign' in the machine config, or run locally with")
             print("         ES2_MAKE_FOREIGN_VULN=1.")
         else:
-            print(" RESULT: the plugin ran. Stock CPython.")
+            print(" RESULT: the plugin ran. Plain python3.")
             print("         No event. No log line. No process spawned, no library loaded,")
             print("         no import recorded - nothing for any monitor to notice.")
             print("         The application cannot even tell you which file it just ran.")

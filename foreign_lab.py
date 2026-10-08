@@ -29,8 +29,7 @@ then does three separate things with the answer:
 
 `shadow-import` also folds under this gate; it has its own route in app.py.
 
-What counts as foreign (the C predicate is `_es_stat_is_foreign`, three rules
-on the file itself):
+What counts as foreign (three rules on the file itself):
 
     owner is another non-root user        -> foreign
     world-writable (mode bit o+w)         -> foreign
