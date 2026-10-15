@@ -603,7 +603,7 @@ priv/                         privilege escalation, and why it does not work her
   setup-privesc.sh            create the access (world-writable, and sudo: owner/group)
   run-priv.sh                 run all four twice: detected, then (attempted) refused
 sample/                       fixture files for the file-read and path-traversal demos
-tests/test_demo.py            smoke tests under plain python3 (see Tests below)
+tests/                        smoke tests under plain python3 (see Tests below)
 requirements.txt              Flask (the only dependency)
 ```
 
@@ -642,10 +642,12 @@ python -m pytest -q tests/
 ```
 
 The tests run under ordinary Python. They check that every route in the
-catalogue exists and that the documented SQL injection and path traversal still
-work, because a demo whose flaw stopped working would show nothing. CI runs
-them on every push and pull request, next to a lint pass for syntax errors and
-undefined names.
+catalogue exists, that the documented SQL injection and path traversal still
+work, and that each command-line demo in `demos/` runs to the end, because a
+demo whose flaw stopped working would show nothing. CI runs them on every push
+and pull request, next to a lint pass for syntax errors and undefined names.
+A new route or demo comes with a test that shows its flaw working under plain
+Python.
 
 ## Contributing and security
 
