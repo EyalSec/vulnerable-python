@@ -1,0 +1,30 @@
+# Citation metadata. GitHub reads this file for the "Cite this repository"
+# button, and Zenodo reads it when it archives a GitHub release.
+cff-version: 1.2.0
+message: "If you use this app in research, a course or a benchmark, please cite it as below."
+type: software
+title: "vulnerable-python: a deliberately vulnerable Python web app"
+abstract: >-
+  A deliberately vulnerable Flask application for security testing and
+  training. Each endpoint passes one kind of untrusted input to one risky
+  operation: a SQL query, a shell command, code evaluation, deserialization,
+  a file path, an outbound request and more. Run it only on an isolated lab
+  machine you control, and never deploy it.
+authors:
+  - given-names: Eyal
+    family-names: Gabay
+    affiliation: EyalSec
+    email: eyal@eyalsec.com
+license: MIT
+repository-code: "https://github.com/EyalSec/vulnerable-python"
+url: "https://eyalsec.com/vulnerabilities"
+keywords:
+  - application security
+  - deliberately vulnerable
+  - security training
+  - sql injection
+  - command injection
+  - path traversal
+  - ssrf
+  - python
+  - flask
