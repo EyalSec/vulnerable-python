@@ -1,5 +1,7 @@
 # vulnerable-python
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/EyalSec/vulnerable-python/badge)](https://scorecard.dev/viewer/?uri=github.com/EyalSec/vulnerable-python)
+
 An intentionally vulnerable Python web app, built as a live demonstration target
 for **[EyalSec](https://eyalsec.com)**. Each endpoint contains exactly one real
 vulnerability, wired from a distinct **taint source** into a distinct **sink**.
