@@ -4,6 +4,19 @@ Notable changes to vulnerable-python. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/). Each version is a git tag.
 
+## [Unreleased]
+
+### Added
+
+- A container image, `ghcr.io/eyalsec/vulnerable-python`, built from `main`
+  for `linux/amd64` and `linux/arm64` with a signed build provenance
+  attestation (`Dockerfile`, `.github/workflows/container.yml`).
+- A development container, so the repository opens in GitHub Codespaces or
+  Ona (formerly Gitpod) with the app running.
+- `requirements-adapters.txt`, the pinned libraries behind `/adapter/*`.
+- A Docker Hub mirror workflow, inactive until the `DOCKERHUB_TOKEN` secret
+  exists.
+
 ## [1.0.0] - 2026-10-15
 
 The first tagged version. It contains:

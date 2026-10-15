@@ -1,0 +1,14 @@
+.git
+.github
+.devcontainer
+tests
+__pycache__
+*.py[cod]
+*.db
+*.fifo
+*.pkl
+*.marshal
+.venv
+venv
+flag.txt
+sample

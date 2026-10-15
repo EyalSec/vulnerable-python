@@ -1,0 +1,9 @@
+# Optional: the libraries behind the /adapter/* routes. The app runs without
+# them, and each of those routes then says which library it would need. The
+# container image installs them so every route works. MongoDB and Redis
+# servers are not included, so those two routes report the failed connection.
+PyYAML==6.0.3
+PyJWT==2.15.1
+SQLAlchemy==2.1.4
+pymongo==4.19.0
+redis==8.1.0
