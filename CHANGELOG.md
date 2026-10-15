@@ -15,9 +15,9 @@ The first tagged version. It contains:
   page at `/` lists every route with an example request.
 - The foreign-code routes under `/foreign/*`, with `setup-foreign.sh` for the
   cases that need a second user on the machine.
-- Optional routes under `/adapter/*` for third-party libraries (Jinja2, YAML,
-  JWT, SQLAlchemy, MongoDB, Redis); without the library installed, each says
-  which one it needs.
+- Optional routes under `/adapter/*` for third-party libraries (Jinja2,
+  MarkupSafe, YAML, JWT, SQLAlchemy, MongoDB, Redis); without the library
+  installed, each says which one it needs.
 - The command-line demos in `demos/`, run in pairs by `run-demos.sh`.
 - The privilege-escalation lab in `priv/`.
 - Smoke tests in `tests/`, run in CI on Python 3.9, 3.12 and 3.13 with a lint
