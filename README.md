@@ -603,6 +603,7 @@ priv/                         privilege escalation, and why it does not work her
   setup-privesc.sh            create the access (world-writable, and sudo: owner/group)
   run-priv.sh                 run all four twice: detected, then (attempted) refused
 sample/                       fixture files for the file-read and path-traversal demos
+tests/test_demo.py            smoke tests under plain python3 (see Tests below)
 requirements.txt              Flask (the only dependency)
 ```
 
@@ -632,6 +633,30 @@ without a single application-level change.
 The landing page is rendered without Jinja2 on purpose: Jinja pulls in the
 compiled `markupsafe._speedups` extension, which is not supported under
 es-python. Pure-Python rendering keeps the demo working under every runtime.
+
+## Tests
+
+```bash
+pip install -r requirements.txt pytest
+python -m pytest -q tests/
+```
+
+The tests run under ordinary Python. They check that every route in the
+catalogue exists and that the documented SQL injection and path traversal still
+work, because a demo whose flaw stopped working would show nothing. CI runs
+them on every push and pull request, next to a lint pass for syntax errors and
+undefined names.
+
+## Contributing and security
+
+Issues and pull requests are welcome; the
+[contributing guide](https://github.com/EyalSec/.github/blob/main/CONTRIBUTING.md)
+says what helps most. The flaws listed above are deliberate, so they are not
+vulnerabilities to report. A problem the app was not meant to have (for example
+one that exposes it beyond the loopback address it binds to by default), or one
+in EyalSec itself, goes privately to security@eyalsec.com or through GitHub's
+**Report a vulnerability** button. See the
+[security policy](https://github.com/EyalSec/.github/blob/main/SECURITY.md).
 
 ---
 
