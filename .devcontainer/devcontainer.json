@@ -1,0 +1,25 @@
+{
+  // One click to a running copy of the demo app, under ordinary Python.
+  // The app listens on 127.0.0.1 inside the environment; Codespaces and Ona
+  // forward the port privately to you. Keep it private: the app is
+  // deliberately insecure, and a public port would hand it to anyone.
+  "name": "vulnerable-python",
+  "build": { "dockerfile": "Dockerfile" },
+  "postCreateCommand": "pip install --user -r requirements.txt -r requirements-adapters.txt pytest",
+  "postAttachCommand": "python app.py",
+  "forwardPorts": [5000],
+  "portsAttributes": {
+    "5000": {
+      "label": "vulnerable-python (deliberately insecure)",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    },
+    "codespaces": {
+      "openFiles": ["README.md", "app.py"]
+    }
+  }
+}

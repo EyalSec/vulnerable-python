@@ -34,6 +34,42 @@ That difference, with no code changes, is the entire product.
 
 ---
 
+## Try it in one click
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/EyalSec/vulnerable-python)
+[![Open in Ona (formerly Gitpod)](https://ona.com/build-with-ona.svg)](https://app.ona.com/#https://github.com/EyalSec/vulnerable-python)
+
+Either button opens a private cloud environment with the app already running
+under ordinary Python on port 5000, so you can send the attacks below from its
+terminal or its browser preview. Keep the forwarded port **private**: a public
+port would hand a deliberately vulnerable app to anyone who finds the URL.
+
+Or run the published container image on your own machine:
+
+```bash
+docker run --rm -p 127.0.0.1:5000:5000 ghcr.io/eyalsec/vulnerable-python
+
+# in a second terminal
+curl -G http://127.0.0.1:5000/sqli --data-urlencode "name=x' OR '1'='1"
+curl -G http://127.0.0.1:5000/cmd-subprocess --data-urlencode "host=127.0.0.1; id"
+```
+
+The `127.0.0.1:` in `-p` keeps the app on your machine. The image is built from
+`main` for `linux/amd64` and `linux/arm64` by
+[this workflow](.github/workflows/container.yml), with a signed build
+provenance attestation you can check before you run it:
+
+```bash
+gh attestation verify oci://ghcr.io/eyalsec/vulnerable-python:latest -R EyalSec/vulnerable-python
+```
+
+All three run the app under ordinary Python, which is the "silently
+exploitable" half of the picture above. To see the same requests reported, run
+it under es-python from your EyalSec dashboard (below), or
+[book a live demo](https://eyalsec.com/contact) and we will walk through it with you.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -42,7 +78,7 @@ pip install -r requirements.txt
 
 # optional: the third-party adapter endpoints under /adapter/*. Without these
 # the app still runs and those routes report which library they would need.
-pip install PyYAML PyJWT SQLAlchemy pymongo redis
+pip install -r requirements-adapters.txt
 
 # optional: the foreign-code cases that need a second user on the box
 # (owned-by-another-user, group-writable, a FIFO, and the root-owned control).
