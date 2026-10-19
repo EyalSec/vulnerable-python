@@ -103,7 +103,7 @@ def main():
         hook_ran = any("planted sitecustomize executed" in l for l in err_tail)
         # A refusal of the hook implicates sitecustomize (or our planted dir) in
         # the error; an abort that names the interpreter's own stdlib cache is
-        # the dev-build startup hazard, not a refusal of this hook.
+        # the file-taint-plus-raise startup hazard, not a refusal of this hook.
         refused_hook = (not hook_ran and rc != 0
                         and any(("sitecustomize" in l) or (hookdir in l)
                                 for l in err_tail))

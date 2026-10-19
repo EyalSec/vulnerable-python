@@ -81,9 +81,9 @@ es-python priv/escalate_syspath.py --raise
 ```
 
 `--raise` arms the raise on the child process that performs the load, not on the
-parent. On the local full dev build an armed raise stops the interpreter at the
-first standard-library marshal load during startup — a property of that build,
-not a result for the demo; each demo detects this and says so. On a real
+parent. With every source armed, file reads included, an armed raise can stop the
+interpreter at the first standard-library marshal load during startup, a property
+of that setup, not a result for the demo; each demo detects this and says so. On a real
 monitored machine the machine's own raise rules decide, and the refusal is
 clean. Read each demo's own RESULT line; do not read the headers as promises.
 

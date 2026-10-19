@@ -12,7 +12,8 @@
 # So the second run of each pair aborts the flow only if:
 #
 #   * the machine has a matching raise rule (the supported path), or
-#   * you are on a local dev build that honours the ES2_RAISE fallback.
+#   * the machine has no raise rules of its own, so es-python honours the
+#     ES2_RAISE fallback.
 #
 # If both runs of a pair print the same RESULT, raising is not armed on this
 # machine. That is a configuration state, not a failure of the demo - and the

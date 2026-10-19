@@ -11,14 +11,15 @@
 # its own. So the second run of each pair refuses the load only if:
 #
 #   * the machine has a matching raise rule (the supported path), or
-#   * you are on a build that honours the --raise fallback AND does not abort at
-#     startup first (see the next paragraph).
+#   * the machine has no raise rules, so es-python honours the --raise
+#     fallback, AND the child does not abort at startup first (see the next
+#     paragraph).
 #
-# THE LOCAL FULL DEV BUILD IS A SPECIAL CASE. That build taints every file it
-# reads, including its own cached .pyc files, so an armed raise stops it at the
-# first standard-library marshal load - during startup, before the demo's own
-# load. Each demo detects this and prints a RESULT saying so; it is a property
-# of that build, not a failure of the demo. The first run of each pair (no
+# EVERY SOURCE ARMED, FILE READS INCLUDED, IS A SPECIAL CASE. es-python can then
+# treat every file it reads as untrusted, including its own cached .pyc files, so
+# an armed raise stops it at the first standard-library marshal load - during
+# startup, before the demo's own load. Each demo detects this and prints a
+# RESULT saying so; it is a property of that setup, not a failure of the demo. The first run of each pair (no
 # --raise) is the real detection either way: the load is judged and reported.
 #
 # Do not read the headers below as promises. Each demo prints its own RESULT

@@ -188,16 +188,16 @@ pip install PyYAML PyJWT SQLAlchemy pymongo redis
 <span class="c"># 2a. plain python3 - silently vulnerable, no telemetry</span>
 python3 app.py
 
-<span class="c"># 2b. es-python, local dev build - arms every taint source and launches the app</span>
+<span class="c"># 2b. your es-python installation - arms every taint source and launches the app</span>
 <span class="a">./run-eyalsec.sh</span>
 <span class="c">#     add ES2_RAISE=1 in front to switch Observe -&gt; Protect (sinks abort)</span>
 
 <span class="c"># 3. on a real monitored machine: install es-python from your EyalSec</span>
 <span class="c">#    dashboard, arm the taint sources in the machine config, then:</span>
 python3.13 app.py</pre>
-  <p class="sub" style="margin-top:2px">On an installed es&#8209;python, taint sources are armed from the dashboard
-    machine config, not from environment variables. The <code style="color:var(--gold);font-family:var(--mono)">run-eyalsec.sh</code>
-    flag path is for a local dev es&#8209;python build.</p>
+  <p class="sub" style="margin-top:2px">On a machine registered to your dashboard, a taint source set On or Off in the
+    machine config wins over the environment variables <code style="color:var(--gold);font-family:var(--mono)">run-eyalsec.sh</code>
+    sets; those variables apply only to sources left Unset.</p>
 </div></section>
 
 <footer><div class="wrap">
