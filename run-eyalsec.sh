@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Launch vulnerable-python under a LOCAL DEV es-python build with every taint
+# Launch vulnerable-python under your es-python installation with every taint
 # source armed. Hitting the endpoints then produces source->sink events on the
 # EyalSec dashboard (Observe), or aborts at the sink if ES2_RAISE=1 (Protect).
 #
-# On an installed es-python the taint sources are armed from the dashboard
-# machine config instead of these environment variables - this script's flag
-# path targets a dev build such as ~/opt/eyalsec.
+# On a machine registered to your dashboard, a taint source set On or Off in
+# the machine config wins over these environment variables; they apply only to
+# sources left Unset. The default interpreter is ~/opt/eyalsec/bin/python3.13.
 #
 # Usage:
 #   ./run-eyalsec.sh                       # uses ~/opt/eyalsec/bin/python3.13

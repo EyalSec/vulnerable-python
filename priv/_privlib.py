@@ -17,7 +17,7 @@ helpers here are the parts they all share:
     caller's environment, and classifies what happened from a first-line
     sentinel plus the child's exit status - so a load that was REFUSED under
     an armed raise is told apart from an interpreter that aborted at startup
-    (the dev-build file-taint hazard; see run-priv.sh).
+    (the file-taint-plus-raise startup hazard; see run-priv.sh).
   * `show_predicate()` prints es-python's own foreign predicate, computed in
     pure Python by `foreign_lab.verdict()`, against the file we planted - the
     same three rules es-python applies at the load, shown so you can see which
@@ -52,8 +52,9 @@ CHILD_START = "PRIV-CHILD-START"
 CHILD_OK = "PRIV-CHILD-OK"
 
 # Demos take `--raise` rather than asking you to export ES2_RAISE. The reason is
-# specific to the local full dev build: that build taints every file read,
-# including the interpreter's own cached .pyc files, so ES2_RAISE=1 on the
+# specific to running with every source armed, file reads included: es-python
+# can then taint every file read, including the interpreter's own cached .pyc
+# files, so ES2_RAISE=1 on the
 # PARENT aborts it at the first stdlib marshal load before the demo runs. The
 # raise belongs on the CHILD that performs the planted load, so each demo builds
 # the child's environment here and leaves the parent untouched.
@@ -102,8 +103,8 @@ def run_victim(victim_path, *args, env=None):
       'blocked'  the interpreter started (printed CHILD_START) but the planted
                  load was refused before the victim finished - an armed raise.
       'startup'  the child exited non-zero WITHOUT printing CHILD_START - the
-                 interpreter aborted during startup, not on our load. On a full
-                 local dev build this is the file-taint-plus-raise hazard, not
+                 interpreter aborted during startup, not on our load. With every
+                 source armed this is the file-taint-plus-raise hazard, not
                  a real result for this demo (run-priv.sh explains it).
     Also returns the child's stdout lines and the tail of its stderr.
     """
@@ -136,11 +137,12 @@ def print_child(out, err_tail):
 
 STARTUP_CAVEAT = "\n".join([
     " RESULT: the child interpreter aborted during STARTUP, not on our load -",
-    "         the local full dev build taints its own cached .pyc files, so an",
-    "         armed raise stops it at the first stdlib marshal load. This is a",
-    "         property of this build, not a result for the demo. Re-run without",
-    "         --raise to see the load reported; arm the raise on a real machine",
-    "         (through its machine config) to see it refused cleanly.",
+    "         with every source armed, file reads included, es-python can taint",
+    "         its own cached .pyc files, so an armed raise stops it at the first",
+    "         stdlib marshal load. This is a property of that setup, not a result",
+    "         for the demo. Re-run without --raise to see the load reported;",
+    "         arm the raise on a real machine (through its machine config) to",
+    "         see it refused cleanly.",
 ])
 
 

@@ -89,7 +89,7 @@ pip install -r requirements-adapters.txt
 # A) plain python3 - silently vulnerable, no telemetry
 python3 app.py                            # http://127.0.0.1:5000/
 
-# B) es-python, local dev build - arms every taint source, then launches
+# B) your es-python installation - arms every taint source, then launches
 ./run-eyalsec.sh
 #    Observe -> Protect:  ES2_RAISE=1 ./run-eyalsec.sh
 
@@ -108,7 +108,7 @@ hooks, agents and filters cannot.
 
 ### On a real monitored machine
 
-For a client-representative demo, do not use the dev flags. Instead:
+For a client-representative demo, do not use the environment-variable flags. Instead:
 
 1. Install es-python on an isolated demo box from your EyalSec dashboard's
    `/install.sh`.
@@ -117,9 +117,10 @@ For a client-representative demo, do not use the dev flags. Instead:
 3. Run the app with the installed es-python: `python3.13 app.py`.
 4. Exercise the endpoints and watch the events appear, attributed to that machine.
 
-An installed es-python arms taint from the **server-pushed machine
-config**, not from environment variables. The `run-eyalsec.sh` flag path is only
-for a local *dev* es-python build.
+On a machine registered to your dashboard, the **machine config** decides
+first: a taint source set On or Off there wins over the environment variables
+`run-eyalsec.sh` sets, and those variables apply only to sources left Unset (see
+[Unset: inherit instead of deciding](https://eyalsec.com/docs/configure#unset)).
 
 ---
 
@@ -127,7 +128,7 @@ for a local *dev* es-python build.
 
 **Taint sources** (where untrusted data enters), each armed independently:
 
-| Source | Armed by (dev) | Demonstrated by |
+| Source | Armed by (environment variable) | Demonstrated by |
 |---|---|---|
 | Network socket | `ES2_MAKE_SOCKET_VULN` | every HTTP endpoint (request data) |
 | File read | `ES2_MAKE_FILE_VULN` | `GET /source/file` |
@@ -135,7 +136,7 @@ for a local *dev* es-python build.
 | Environment variable | `ES2_MAKE_ENV_VULN` | `GET /source/env` |
 | Command-line `argv` | `ES2_MAKE_ENV_VULN` | `demos/argv_demo.py` |
 | Foreign code (other-user-writable) | `ES2_MAKE_FOREIGN_VULN` | `GET /source/foreign` and the whole `/foreign/*` group, `demos/uncatchable_plugin.py`, `demos/foreign_main_script.py`, `demos/untrusted_code_demo.py` |
-| `make_vuln(obj, n)` (an application-declared secret) | dev build: whenever the taint engine is active. Installed build: only when the machine config enables the `make_vuln` source | `demos/secret_exfil_server.py`, `demos/taint_gauntlet.py` |
+| `make_vuln(obj, n)` (an application-declared secret) | the machine config's `make_vuln` source (it has no environment variable) | `demos/secret_exfil_server.py`, `demos/taint_gauntlet.py` |
 | Unverified TLS peer | folds under `ES2_MAKE_SOCKET_VULN` | `GET /source/tls-unverified` |
 | Weak PRNG output | `ES2_MAKE_WEAKRANDOM_VULN` | `GET /weak-random` |
 | Hardcoded credential | `ES2_MAKE_SECRET_VULN` | `GET /credential-exfil`, `GET /credential-logging` |
@@ -615,7 +616,7 @@ demo_credentials.py           fake hardcoded secrets for the `hardcoded` taint s
 foreign_lab.py                fixtures for the /foreign/* routes, plus the foreign
                               predicate mirrored in Python so each route can show its work
 landing.py                    the landing-page catalog served at /, rendered in pure Python
-run-eyalsec.sh                launch the web app under a dev es-python, every source armed
+run-eyalsec.sh                launch the web app under your es-python, every source armed
 run-demos.sh                  run the CLI demos twice each, with and without a raise
 setup-foreign.sh              sudo helper for the foreign cases that need a second user
 demos/
