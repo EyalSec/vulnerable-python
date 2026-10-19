@@ -577,7 +577,7 @@ es-python demos/driver_sinks.py
 Anything you do not configure is skipped and reported as skipped, so the script
 is safe to run before you have set up any database at all.
 
-**LDAP is the honest exception, and it is deliberate.** LDAP has no
+**LDAP works differently, by design.** LDAP has no
 bind-parameter mechanism. The correct way to build a filter is
 `ldap.filter.filter_format`, which *escapes* the value - but the escaped value
 is still spliced into the filter string, so it is still tainted and the sink
@@ -589,8 +589,8 @@ on a base DN would fire on the extremely common "base DN built from a tenant
 id" pattern, and DN injection is a distinct class that would need its own
 label.
 
-SQL Server drivers (`pymssql`, `pyodbc`) are **not** covered yet: queries sent
-through them are not checked.
+The covered drivers are the ones listed above. SQL Server's (`pymssql`,
+`pyodbc`) are outside that set, so queries sent through them are not checked.
 
 ---
 
