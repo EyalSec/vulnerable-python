@@ -4,6 +4,6 @@
 # servers are not included, so those two routes report the failed connection.
 PyYAML==6.0.3
 PyJWT==2.15.1
-SQLAlchemy==2.1.4
+SQLAlchemy==2.1.5
 pymongo==4.19.0
 redis==8.1.0
