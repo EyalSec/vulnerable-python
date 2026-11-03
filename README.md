@@ -655,10 +655,10 @@ it is imported and compiled. Two consequences follow, and neither is a bug:
    fire again.
 
 The file also carries two values that are deliberately **not** matched, sitting
-next to the ones that are: a passphrase (the token-shape filter rejects any
-value containing whitespace, so `"correct horse battery staple"` is missed by
-design - matching it would drag in every English sentence assigned to a
-variable whose name ends in `password`) and a placeholder like `changeme`.
+next to the ones that are: a passphrase (the token-shape filter skips any
+value containing whitespace, such as `"correct horse battery staple"`, which keeps
+every English sentence assigned to a variable whose name ends in `password` out
+of your events) and a placeholder like `changeme`.
 
 The `demos/` scripts import `es_compat`, which supplies no-op versions of
 `make_vuln` / `check_vuln` / `get_taint` when the runtime has no taint
