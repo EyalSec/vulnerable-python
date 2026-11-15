@@ -183,14 +183,13 @@ _HEAD = """<!doctype html>
   .ep .safe .ok{color:var(--green);font-weight:700}
   .ep a.safe-link{color:var(--green)}
   .ep .safe-why{color:var(--dim)}
-  .runbtn{font-family:var(--sans);font-size:14px;font-weight:700;color:#000;
-    background:var(--amber);border:0;border-radius:6px;padding:7px 12px;cursor:pointer}
-  .runbtn:hover{background:var(--gold)}
-  .curl{display:block;margin-top:6px;color:var(--dim);font-size:12px}
-  pre.runout{margin:8px 0 0;background:#0e100c;border:1px solid var(--border-hi);
-    border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12.5px;
-    color:var(--body);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
-  pre.runout.blocked{border-color:var(--green);color:var(--green)}
+  .curl{display:inline-block;margin-right:8px;color:var(--body);background:#181a15;
+    border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:12px}
+  .copybtn{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--ink);
+    background:var(--panel2);border:1px solid var(--border-hi);border-radius:5px;
+    padding:4px 10px;cursor:pointer}
+  .copybtn:hover{border-color:var(--amber)}
+  .posthint{display:block;margin-top:5px;color:var(--dim);font-size:12px}
 %%BANNER_CSS%%</style>
 </head>
 <body>
@@ -294,27 +293,13 @@ python3.13 app.py</pre>
 <script>
 (function(){
   document.addEventListener("click", function(ev){
-    var b = ev.target.closest(".runbtn"); if(!b) return;
-    var path = b.getAttribute("data-path"), sample = b.getAttribute("data-sample");
-    var out = b.parentNode.querySelector(".runout");
-    out.hidden = false; out.className = "runout"; out.textContent = "Running " + path + " ...";
-    fetch("/sample/" + sample).then(function(r){ return r.arrayBuffer(); })
-    .then(function(buf){
-      return fetch(path, {method:"POST", headers:{"Content-Type":"application/octet-stream"},
-                          body: buf});
-    })
-    .then(function(r){ return r.text().then(function(t){ return {status:r.status, body:t}; }); })
-    .then(function(res){
-      var blocked = res.status === 403;
-      out.className = blocked ? "runout blocked" : "runout";
-      var shown = res.body;
-      if (/text\/html|<!doctype/i.test(shown.slice(0,200))) {
-        var m = shown.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-        if (m) shown = m[1].replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&").replace(/&#x27;/g,"'").replace(/&quot;/g,'"');
-      }
-      out.textContent = "HTTP " + res.status + (blocked ? "  (es-python stopped it)\n" : "\n") + shown.trim();
-    })
-    .catch(function(e){ out.textContent = "Request failed: " + e; });
+    var b = ev.target.closest(".copybtn"); if(!b) return;
+    var el = document.getElementById(b.getAttribute("data-target"));
+    if(!el) return;
+    var text = el.textContent;
+    var done = function(){ var o=b.textContent; b.textContent="Copied"; setTimeout(function(){b.textContent=o;},1200); };
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, done); }
+    else { var r=document.createRange(); r.selectNode(el); var sel=getSelection(); sel.removeAllRanges(); sel.addRange(r); try{document.execCommand("copy");}catch(e){} sel.removeAllRanges(); done(); }
   });
 })();
 </script>
@@ -346,11 +331,11 @@ def _endpoint_row(method, path, example, source, sink, vuln, reports, safe=None,
         example_html = '<a class="example" href="%s">%s</a>' % (esc(example), esc(example))
     elif path in _RUNNABLE_POST:
         example_html = (
-            '<button type="button" class="runbtn" '
-            'data-path="%s" data-sample="%s">&#9654; Run this attack</button>'
-            '<code class="example static curl">%s</code>'
-            '<pre class="runout" hidden></pre>'
-        ) % (esc(path), esc(_RUNNABLE_POST[path]), esc(example))
+            '<code class="example static curl" id="curl-%s">%s</code>'
+            '<button type="button" class="copybtn" data-target="curl-%s">Copy command</button>'
+            '<span class="posthint">POST endpoint &mdash; run it from a terminal, '
+            'or try the safe version below in the browser</span>'
+        ) % (esc(_RUNNABLE_POST[path]), esc(example), esc(_RUNNABLE_POST[path]))
     else:
         example_html = '<span class="example static">%s</span>' % esc(example)
     return (

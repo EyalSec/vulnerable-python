@@ -117,6 +117,7 @@ def test_landing_shows_open_source_title_and_icon(client):
     assert "<title>vulnerable-python" in body and "EyalSec" in body
     assert "/favicon.ico" in body
     assert body.count("Safe version (works)") >= 10
+    assert "Copy command" in body  # POST rows are clickable (copy), not dead text
 
 
 def test_favicon_is_served_as_an_icon(client):

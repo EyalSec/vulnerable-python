@@ -37,12 +37,10 @@ ENDPOINTS catalog at the bottom, which also drives the landing page at "/".
 import builtins
 import csv
 import ctypes
-import ast
 import importlib
 import importlib.machinery
 import importlib.util
 import io
-import ipaddress
 import json
 import logging
 import marshal
@@ -1524,46 +1522,100 @@ def safe_sqli():
             "why_safe": "the value is bound, not concatenated into the SQL"}
 
 
+# The host must be one we chose, and the value handed to the process launcher is
+# our own constant for it - never the request string. Validating a string does
+# not make it trusted; only using a value you control does.
+_PING_TARGETS = {"127.0.0.1": "127.0.0.1", "localhost": "127.0.0.1"}
+
+
 @app.get("/safe/cmd")
 def safe_cmd():
-    """FIX for /cmd and /cmd-subprocess: validate the host as an IP address and
-    pass an argument list with no shell. A ';' or '|' can only ever be one
-    (invalid) host, never a second command."""
+    """FIX for /cmd and /cmd-subprocess: look the host up in a fixed table and
+    launch ping with an argument list (no shell) built from OUR constant, not
+    from the request. '127.0.0.1; id' is simply absent from the table."""
     raw = request.args.get("host", "127.0.0.1")
-    try:
-        host = str(ipaddress.ip_address(raw))  # validate + normalise
-    except ValueError:
-        return {"host": raw, "accepted": False,
-                "why_safe": "input is not an IP address, so it is refused before "
-                            "any command runs"}, 400
-    out = subprocess.run(["ping", "-c", "1", "-w", "2", host],
-                         capture_output=True, text=True)  # no shell
-    return {"host": host, "accepted": True, "exit_code": out.returncode,
+    target = _PING_TARGETS.get(raw)
+    if target is None:
+        return {"host": raw, "accepted": False, "allowed": sorted(_PING_TARGETS),
+                "why_safe": "the host is not one we allow-list, so nothing runs; "
+                            "note that validating a string would not be enough - "
+                            "the launcher is only ever given our own constant"}, 400
+    out = subprocess.run(["ping", "-c", "1", "-w", "2", target],
+                         capture_output=True, text=True)  # no shell, constant argv
+    return {"host": raw, "accepted": True, "exit_code": out.returncode,
             "stdout": out.stdout,
-            "why_safe": "an argument list with shell=False; the host is a "
-                        "validated IP, never a shell string"}
+            "why_safe": "an argument list with shell=False, built from a constant"}
 
 
 def _safe_arith(expr):
-    """Evaluate an arithmetic expression over numbers only. Anything that is not
-    a number or a +-*/ operator (names, calls, attribute access) is rejected."""
-    ops = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
-           ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b,
-           ast.Mod: lambda a, b: a % b, ast.Pow: lambda a, b: a ** b,
-           ast.USub: lambda a: -a, ast.UAdd: lambda a: +a}
+    """Evaluate an arithmetic expression over numbers only, with a hand-written
+    tokeniser and parser. It never calls eval, exec or compile, so the request
+    string is only ever read as data - which is the whole point of the fix."""
+    toks, i, n = [], 0, len(expr)
+    while i < n:
+        ch = expr[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in "+-*/%()":
+            if ch == "*" and expr[i:i + 2] == "**":
+                toks.append("**"); i += 2; continue
+            toks.append(ch); i += 1; continue
+        if ch.isdigit() or ch == ".":
+            j = i
+            while j < n and (expr[j].isdigit() or expr[j] == "."):
+                j += 1
+            num = expr[i:j]
+            toks.append(float(num) if "." in num else int(num))
+            i = j; continue
+        raise ValueError("only numbers and + - * / %% ** ( ) are allowed")
 
-    def ev(node):
-        if isinstance(node, ast.Expression):
-            return ev(node.body)
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
-        if isinstance(node, ast.BinOp) and type(node.op) in ops:
-            return ops[type(node.op)](ev(node.left), ev(node.right))
-        if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
-            return ops[type(node.op)](ev(node.operand))
-        raise ValueError("only numbers and + - * / %% ** are allowed")
+    pos = 0
 
-    return ev(ast.parse(expr, mode="eval"))
+    def peek():
+        return toks[pos] if pos < len(toks) else None
+
+    def eat():
+        nonlocal pos
+        t = toks[pos]; pos += 1; return t
+
+    def atom():
+        t = peek()
+        if t == "(":
+            eat(); v = expr_rule(); 
+            if peek() != ")":
+                raise ValueError("unbalanced parentheses")
+            eat(); return v
+        if t in ("+", "-"):
+            eat(); return +atom() if t == "+" else -atom()
+        if isinstance(t, (int, float)):
+            return eat()
+        raise ValueError("expected a number")
+
+    def power():
+        v = atom()
+        if peek() == "**":
+            eat(); return v ** power()
+        return v
+
+    def term():
+        v = power()
+        while peek() in ("*", "/", "%"):
+            op = eat(); r = power()
+            v = v * r if op == "*" else v / r if op == "/" else v % r
+        return v
+
+    def expr_rule():
+        v = term()
+        while peek() in ("+", "-"):
+            op = eat(); r = term()
+            v = v + r if op == "+" else v - r
+        return v
+
+    result = expr_rule()
+    if pos != len(toks):
+        raise ValueError("trailing characters")
+    return result
 
 
 @app.get("/safe/eval")
@@ -1573,16 +1625,16 @@ def safe_eval():
     expr = request.args.get("expr", "6*7")
     try:
         return {"expr": expr, "result": _safe_arith(expr),
-                "why_safe": "parsed and evaluated against a fixed whitelist; "
-                            "no eval, no names, no calls"}
-    except (ValueError, SyntaxError, ZeroDivisionError, TypeError) as exc:
+                "why_safe": "read with a hand-written parser; no eval, exec or "
+                            "compile ever touches the input"}
+    except (ValueError, IndexError, ZeroDivisionError) as exc:
         return {"expr": expr, "accepted": False, "reason": str(exc)}, 400
 
 
 @app.get("/safe/exec")
 def safe_exec():
-    """FIX for /exec: read 'name=literal' assignments by parsing literals with
-    ast.literal_eval. The input becomes data in a dict, never executed code."""
+    """FIX for /exec: read 'name=value' assignments where each value is a JSON
+    literal (json.loads). The input becomes data in a dict, never run as code."""
     code = request.args.get("code", "x = 1")
     result = {}
     try:
@@ -1590,12 +1642,13 @@ def safe_exec():
             if not part.strip():
                 continue
             key, _, val = part.partition("=")
-            result[key.strip()] = ast.literal_eval(val.strip())
-    except (ValueError, SyntaxError) as exc:
-        return {"code": code, "accepted": False, "reason": str(exc)}, 400
+            result[key.strip()] = json.loads(val.strip())
+    except (ValueError, json.JSONDecodeError) as exc:
+        return {"code": code, "accepted": False,
+                "reason": "values must be JSON literals: " + str(exc)}, 400
     return {"code": code, "values": result,
-            "why_safe": "values are parsed as literals (ast.literal_eval); "
-                        "nothing is executed"}
+            "why_safe": "values are read with json.loads (data only); no eval, "
+                        "exec or compile is involved"}
 
 
 @app.get("/safe/deserialize")
@@ -1612,19 +1665,23 @@ def safe_deserialize():
                         "the way pickle/marshal can"}
 
 
+# The file is chosen from a fixed table; open() is given OUR constant filename,
+# never the request string, so "../" has nothing to act on.
+_READABLE_FILES = {"notes.txt": "notes.txt", "sample.txt": "tainted_input.txt"}
+
+
 @app.get("/safe/path")
 def safe_path():
-    """FIX for /path: resolve the final path and confirm it stays inside the
-    sample directory before opening it. '../' escapes are rejected."""
+    """FIX for /path: look the name up in a fixed table and open OUR constant
+    path for it. '../flag.txt' is simply not a key, so it is refused."""
     fname = request.args.get("file", "notes.txt")
-    base = os.path.realpath(SAMPLE_DIR)
-    full = os.path.realpath(os.path.join(base, fname))
-    if full != base and not full.startswith(base + os.sep):
-        return {"file": fname, "accepted": False,
-                "why_safe": "the resolved path left the sample directory, "
-                            "so it is refused"}, 400
+    target = _READABLE_FILES.get(fname)
+    if target is None:
+        return {"file": fname, "accepted": False, "allowed": sorted(_READABLE_FILES),
+                "why_safe": "only allow-listed names resolve to a path; open() is "
+                            "given a constant, never the request string"}, 400
     try:
-        with open(full) as fh:
+        with open(os.path.join(SAMPLE_DIR, target)) as fh:
             body = fh.read()
     except OSError as exc:
         return {"file": fname, "accepted": True, "error": str(exc)}, 404
@@ -1725,16 +1782,20 @@ def safe_import():
     return {"module": module, "attributes": [a for a in dir(mod) if not a.startswith("_")][:12]}
 
 
+_FIFO_NAMES = {"demo.fifo": "demo.fifo", "queue.fifo": "queue.fifo"}
+
+
 @app.get("/safe/mkfifo")
 def safe_mkfifo():
-    """FIX for /mkfifo: reject any name with a path separator, so the FIFO can
-    only be created in the directory we chose."""
+    """FIX for /mkfifo: take the name from a fixed table and build the path from
+    OUR constant, so '../../tmp/escape.fifo' has nothing to act on."""
     name = request.args.get("name", "demo.fifo")
-    if os.sep in name or (os.altsep and os.altsep in name) or name in (".", ".."):
-        return {"name": name, "accepted": False,
-                "why_safe": "names with a path separator are refused; the FIFO "
-                            "cannot escape its directory"}, 400
-    path = os.path.join(tempfile.gettempdir(), name)
+    chosen = _FIFO_NAMES.get(name)
+    if chosen is None:
+        return {"name": name, "accepted": False, "allowed": sorted(_FIFO_NAMES),
+                "why_safe": "only allow-listed names are used, and the path is "
+                            "built from a constant, never the request string"}, 400
+    path = os.path.join(tempfile.gettempdir(), chosen)
     try:
         os.mkfifo(path)
         os.unlink(path)
