@@ -74,7 +74,14 @@ _HEAD = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vulnerable-python · EyalSec demo target</title>
+<title>vulnerable-python — EyalSec open-source demo</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/png" href="/static/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="theme-color" content="#111310">
+<meta name="description" content="An open-source, deliberately vulnerable Python app, running under EyalSec es-python. Read every line of its source code.">
+<meta property="og:title" content="vulnerable-python — EyalSec open-source demo">
+<meta property="og:description" content="Open source. Every page links to the exact code behind it. Running under EyalSec es-python.">
 <style>
   :root{
     --bg:#111310; --surface:#15170f; --panel:#181a15; --panel2:#1c1e18;
@@ -171,6 +178,19 @@ _HEAD = """<!doctype html>
     .ep{grid-template-columns:1fr;gap:8px}
     .hero{padding:40px 0 18px}
   }
+  .ep .safe{margin-top:8px;padding:8px 10px;border-left:3px solid var(--green);
+    background:rgba(164,214,127,.08);border-radius:0 6px 6px 0;font-size:13px}
+  .ep .safe .ok{color:var(--green);font-weight:700}
+  .ep a.safe-link{color:var(--green)}
+  .ep .safe-why{color:var(--dim)}
+  .runbtn{font-family:var(--sans);font-size:14px;font-weight:700;color:#000;
+    background:var(--amber);border:0;border-radius:6px;padding:7px 12px;cursor:pointer}
+  .runbtn:hover{background:var(--gold)}
+  .curl{display:block;margin-top:6px;color:var(--dim);font-size:12px}
+  pre.runout{margin:8px 0 0;background:#0e100c;border:1px solid var(--border-hi);
+    border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12.5px;
+    color:var(--body);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
+  pre.runout.blocked{border-color:var(--green);color:var(--green)}
 %%BANNER_CSS%%</style>
 </head>
 <body>
@@ -271,24 +291,72 @@ python3.13 app.py</pre>
   <a href="https://eyalsec.com">EyalSec</a>. It is intentionally insecure and exists only
   to show runtime taint tracking from source to sink. Isolated lab use only.
 </div></footer>
+<script>
+(function(){
+  document.addEventListener("click", function(ev){
+    var b = ev.target.closest(".runbtn"); if(!b) return;
+    var path = b.getAttribute("data-path"), sample = b.getAttribute("data-sample");
+    var out = b.parentNode.querySelector(".runout");
+    out.hidden = false; out.className = "runout"; out.textContent = "Running " + path + " ...";
+    fetch("/sample/" + sample).then(function(r){ return r.arrayBuffer(); })
+    .then(function(buf){
+      return fetch(path, {method:"POST", headers:{"Content-Type":"application/octet-stream"},
+                          body: buf});
+    })
+    .then(function(r){ return r.text().then(function(t){ return {status:r.status, body:t}; }); })
+    .then(function(res){
+      var blocked = res.status === 403;
+      out.className = blocked ? "runout blocked" : "runout";
+      var shown = res.body;
+      if (/text\/html|<!doctype/i.test(shown.slice(0,200))) {
+        var m = shown.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+        if (m) shown = m[1].replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&").replace(/&#x27;/g,"'").replace(/&quot;/g,'"');
+      }
+      out.textContent = "HTTP " + res.status + (blocked ? "  (es-python stopped it)\n" : "\n") + shown.trim();
+    })
+    .catch(function(e){ out.textContent = "Request failed: " + e; });
+  });
+})();
+</script>
 </body>
 </html>
 """
 
 
-def _endpoint_row(method, path, example, source, sink, vuln, reports, code_url=None):
+# POST paths whose landing-page "Run" button posts a canned payload from
+# /sample/<key>. A link cannot carry a request body, so these are buttons.
+_RUNNABLE_POST = {"/pickle": "pickle", "/marshal": "marshal", "/xxe": "xxe"}
+
+
+def _safe_line(safe):
+    if not safe:
+        return ""
+    return ('<div class="safe"><span class="ok">&#10003; Safe version (works):</span> '
+            '<a class="example safe-link" href="%s">%s</a>'
+            '<span class="safe-why"> same job done safely &mdash; es-python stays quiet</span>'
+            '</div>') % (esc(safe), esc(safe))
+
+
+def _endpoint_row(method, path, example, source, sink, vuln, reports, safe=None, code_url=None):
     if code_url:
         example_html_code = '<a class="code" href="%s">View the code</a>' % esc(code_url)
     else:
         example_html_code = ""
     if method == "GET":
         example_html = '<a class="example" href="%s">%s</a>' % (esc(example), esc(example))
+    elif path in _RUNNABLE_POST:
+        example_html = (
+            '<button type="button" class="runbtn" '
+            'data-path="%s" data-sample="%s">&#9654; Run this attack</button>'
+            '<code class="example static curl">%s</code>'
+            '<pre class="runout" hidden></pre>'
+        ) % (esc(path), esc(_RUNNABLE_POST[path]), esc(example))
     else:
         example_html = '<span class="example static">%s</span>' % esc(example)
     return (
         '<div class="ep">'
         '<div class="col-label">'
-        '<span class="method %s">%s</span><span class="path">%s</span>%s%s'
+        '<span class="method %s">%s</span><span class="path">%s</span>%s%s%s'
         '</div>'
         '<div><div class="vuln">%s</div>'
         '<div class="flow"><span class="pill">%s</span><span class="arrow">&rarr;</span>'
@@ -296,6 +364,7 @@ def _endpoint_row(method, path, example, source, sink, vuln, reports, code_url=N
         '<div class="reports"><b>EyalSec reports</b>%s</div>'
         '</div>'
     ) % (esc(method), esc(method), esc(path), example_html, example_html_code,
+         _safe_line(safe),
          esc(vuln), esc(source), esc(sink), esc(reports))
 
 
@@ -368,7 +437,12 @@ _PAGE_CSS = """
 def response_page(title, body, code_url=None, line=None, live=False, stopped=False):
     parts = ['<!doctype html><html lang="en"><head><meta charset="utf-8">'
              '<meta name="viewport" content="width=device-width, initial-scale=1">'
-             '<title>%s - vulnerable-python (open source)</title><style>%s%s</style>'
+             '<title>%s &mdash; vulnerable-python (EyalSec)</title>'
+             '<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">'
+             '<link rel="icon" type="image/png" href="/static/icon-192.png" sizes="192x192">'
+             '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
+             '<meta name="theme-color" content="#111310">'
+             '<style>%s%s</style>'
              '</head><body>' % (esc(title), BANNER_CSS, _PAGE_CSS),
              banner(code_url=code_url, live=live),
              '<main><p><a href="/">&larr; All endpoints</a></p>',

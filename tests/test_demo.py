@@ -82,3 +82,51 @@ def test_non_browser_clients_get_the_plain_response(client):
 def test_browser_view_escapes_the_response(client):
     page = client.get("/sqli?name=<b>x</b>", headers=BROWSER).get_data(as_text=True)
     assert "<b>x</b>" not in page
+
+
+def test_every_vulnerable_route_has_a_working_safe_sibling(client):
+    # each secure sibling returns 200 with ordinary input
+    safe = {row[2]: row[8] for row in demo.ENDPOINTS if len(row) > 8 and row[8]}
+    assert "/sqli" in safe and "/cmd" in safe and "/marshal" in safe
+    for url in set(safe.values()):
+        if url.startswith("/safe/ssrf"):
+            continue  # keep the suite off the network, like the rest of the file
+        resp = client.get(url)
+        assert resp.status_code == 200, f"{url} -> {resp.status_code}"
+
+
+def test_safe_siblings_refuse_the_attack_input(client):
+    for url, code in [
+        ("/safe/eval?expr=__import__('os').getuid()", 400),
+        ("/safe/path?file=../flag.txt", 400),
+        ("/safe/import?module=os", 400),
+        ("/safe/cmd?host=127.0.0.1; id", 400),
+        ("/safe/ssrf?url=http://169.254.169.254/", 400),
+    ]:
+        assert client.get(url).status_code == code, url
+
+
+def test_safe_sqli_is_parameterised_and_hides_the_secret(client):
+    data = client.get("/safe/sqli?name=alice").get_json()
+    assert data["query"].endswith("name = ?")
+    assert all("secret" not in k for row in data["rows"] for k in [str(row)])
+
+
+def test_landing_shows_open_source_title_and_icon(client):
+    body = client.get("/", headers=BROWSER).get_data(as_text=True)
+    assert "<title>vulnerable-python" in body and "EyalSec" in body
+    assert "/favicon.ico" in body
+    assert body.count("Safe version (works)") >= 10
+
+
+def test_favicon_is_served_as_an_icon(client):
+    resp = client.get("/favicon.ico")
+    assert resp.status_code == 200
+    assert "icon" in resp.mimetype or "image" in resp.mimetype
+    assert resp.get_data().startswith(b"\x00\x00\x01\x00")  # ICO magic, not HTML
+
+
+def test_post_sample_payloads_exist(client):
+    for name in ("pickle", "marshal", "xxe"):
+        resp = client.get(f"/sample/{name}")
+        assert resp.status_code == 200 and len(resp.get_data()) > 0

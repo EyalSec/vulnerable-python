@@ -37,10 +37,13 @@ ENDPOINTS catalog at the bottom, which also drives the landing page at "/".
 import builtins
 import csv
 import ctypes
+import ast
 import importlib
 import importlib.machinery
 import importlib.util
 import io
+import ipaddress
+import json
 import logging
 import marshal
 import mmap
@@ -51,9 +54,11 @@ import re
 import socket
 import sqlite3
 import ssl
+import string
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -1490,6 +1495,272 @@ def adapter_redis():
     return {"script": script, "result": result, "note": note}
 
 
+
+# =========================================================================== #
+# SECURE COUNTERPARTS
+# For each vulnerable endpoint above there is a /safe/... sibling that does the
+# SAME job the right way: untrusted data is bound, validated, escaped or
+# allow-listed so it never reaches the dangerous operation as code or as a
+# statement. These return 200 and work with ordinary input, and es-python stays
+# quiet on them - a parameterised query, an argument list with no shell, a
+# contained path. That is the contrast the demo is here to show: the flaw fires,
+# the fix does not.
+# =========================================================================== #
+
+@app.get("/safe/sqli")
+def safe_sqli():
+    """FIX for /sqli: a parameterised query. The name is a bound parameter, so
+    the SQL statement itself is a constant and the input is never SQL."""
+    name = request.args.get("name", "alice")
+    db = db_connect()
+    try:
+        rows = db.execute(
+            "SELECT id, name, bio FROM users WHERE name = ?", (name,)
+        ).fetchall()
+    finally:
+        db.close()
+    return {"query": "SELECT id, name, bio FROM users WHERE name = ?",
+            "parameter": name, "rows": rows,
+            "why_safe": "the value is bound, not concatenated into the SQL"}
+
+
+@app.get("/safe/cmd")
+def safe_cmd():
+    """FIX for /cmd and /cmd-subprocess: validate the host as an IP address and
+    pass an argument list with no shell. A ';' or '|' can only ever be one
+    (invalid) host, never a second command."""
+    raw = request.args.get("host", "127.0.0.1")
+    try:
+        host = str(ipaddress.ip_address(raw))  # validate + normalise
+    except ValueError:
+        return {"host": raw, "accepted": False,
+                "why_safe": "input is not an IP address, so it is refused before "
+                            "any command runs"}, 400
+    out = subprocess.run(["ping", "-c", "1", "-w", "2", host],
+                         capture_output=True, text=True)  # no shell
+    return {"host": host, "accepted": True, "exit_code": out.returncode,
+            "stdout": out.stdout,
+            "why_safe": "an argument list with shell=False; the host is a "
+                        "validated IP, never a shell string"}
+
+
+def _safe_arith(expr):
+    """Evaluate an arithmetic expression over numbers only. Anything that is not
+    a number or a +-*/ operator (names, calls, attribute access) is rejected."""
+    ops = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
+           ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b,
+           ast.Mod: lambda a, b: a % b, ast.Pow: lambda a, b: a ** b,
+           ast.USub: lambda a: -a, ast.UAdd: lambda a: +a}
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            return ops[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in ops:
+            return ops[type(node.op)](ev(node.operand))
+        raise ValueError("only numbers and + - * / %% ** are allowed")
+
+    return ev(ast.parse(expr, mode="eval"))
+
+
+@app.get("/safe/eval")
+def safe_eval():
+    """FIX for /eval: a tiny arithmetic evaluator that parses the input and
+    walks a whitelist of nodes, instead of handing it to eval."""
+    expr = request.args.get("expr", "6*7")
+    try:
+        return {"expr": expr, "result": _safe_arith(expr),
+                "why_safe": "parsed and evaluated against a fixed whitelist; "
+                            "no eval, no names, no calls"}
+    except (ValueError, SyntaxError, ZeroDivisionError, TypeError) as exc:
+        return {"expr": expr, "accepted": False, "reason": str(exc)}, 400
+
+
+@app.get("/safe/exec")
+def safe_exec():
+    """FIX for /exec: read 'name=literal' assignments by parsing literals with
+    ast.literal_eval. The input becomes data in a dict, never executed code."""
+    code = request.args.get("code", "x = 1")
+    result = {}
+    try:
+        for part in code.split(";"):
+            if not part.strip():
+                continue
+            key, _, val = part.partition("=")
+            result[key.strip()] = ast.literal_eval(val.strip())
+    except (ValueError, SyntaxError) as exc:
+        return {"code": code, "accepted": False, "reason": str(exc)}, 400
+    return {"code": code, "values": result,
+            "why_safe": "values are parsed as literals (ast.literal_eval); "
+                        "nothing is executed"}
+
+
+@app.get("/safe/deserialize")
+def safe_deserialize():
+    """FIX for /pickle and /marshal: accept JSON, a data-only format with no
+    code-execution gadgets, instead of pickle or marshal."""
+    data = request.args.get("data", '{"hello": "world"}')
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError as exc:
+        return {"data": data, "accepted": False, "reason": str(exc)}, 400
+    return {"data": data, "parsed": obj,
+            "why_safe": "JSON carries data only; it cannot encode a callable "
+                        "the way pickle/marshal can"}
+
+
+@app.get("/safe/path")
+def safe_path():
+    """FIX for /path: resolve the final path and confirm it stays inside the
+    sample directory before opening it. '../' escapes are rejected."""
+    fname = request.args.get("file", "notes.txt")
+    base = os.path.realpath(SAMPLE_DIR)
+    full = os.path.realpath(os.path.join(base, fname))
+    if full != base and not full.startswith(base + os.sep):
+        return {"file": fname, "accepted": False,
+                "why_safe": "the resolved path left the sample directory, "
+                            "so it is refused"}, 400
+    try:
+        with open(full) as fh:
+            body = fh.read()
+    except OSError as exc:
+        return {"file": fname, "accepted": True, "error": str(exc)}, 404
+    return Response(body, mimetype="text/plain")
+
+
+_SSRF_ALLOWED_HOSTS = {"example.com", "www.example.com"}
+
+
+@app.get("/safe/ssrf")
+def safe_ssrf():
+    """FIX for /ssrf: the target host must be on an allow-list before any
+    request is made. Cloud-metadata and internal addresses are refused."""
+    url = request.args.get("url", "http://example.com")
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https") or host not in _SSRF_ALLOWED_HOSTS:
+        return {"url": url, "accepted": False, "allowed_hosts": sorted(_SSRF_ALLOWED_HOSTS),
+                "why_safe": "the host is not on the allow-list, so no outbound "
+                            "request is made"}, 400
+    try:
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            body = resp.read(2048).decode("utf-8", "replace")
+    except Exception as exc:
+        return {"url": url, "accepted": True, "fetched": False,
+                "note": "host is allow-listed; this sandbox has no network, so "
+                        "the fetch itself cannot complete here",
+                "error": f"{exc.__class__.__name__}: {exc}"}
+    return {"url": url, "accepted": True, "fetched": True, "body": body}
+
+
+@app.get("/safe/xml")
+def safe_xml():
+    """FIX for /xxe: parse with a parser that has entity resolution turned off,
+    so external entities and entity expansion cannot fire."""
+    doc = request.args.get("doc", "<note><to>world</to></note>")
+    parser = ET.XMLParser()
+    try:
+        parser.parser.DefaultHandler = lambda data: None
+        parser.parser.ExternalEntityRefHandler = lambda *a: False
+    except AttributeError:
+        pass
+    try:
+        root = ET.fromstring(doc, parser=parser)
+    except ET.ParseError as exc:
+        return {"doc": doc, "accepted": False, "reason": str(exc)}, 400
+    return {"root_tag": root.tag, "text": (root.text or "").strip(),
+            "why_safe": "external-entity resolution is disabled on the parser"}
+
+
+@app.get("/safe/redos")
+def safe_redos():
+    """FIX for /redos: treat the user's text as a literal to search for, not as
+    a regular expression. re.escape neutralises every metacharacter."""
+    pattern = request.args.get("pattern", "hello")
+    text = request.args.get("text", "hello world")
+    match = re.search(re.escape(pattern), text)
+    return {"pattern": pattern, "matched": bool(match),
+            "why_safe": "the input is escaped (re.escape), so it is matched "
+                        "literally and cannot back-track"}
+
+
+@app.get("/safe/csv")
+def safe_csv():
+    """FIX for /csv: prefix any field that begins with a formula trigger
+    (= + - @) with a quote, so a spreadsheet treats it as text."""
+    row = request.args.get("row", "a,b,c")
+    fields = []
+    for f in row.split(","):
+        fields.append("'" + f if f[:1] in "=+-@\t\r" else f)
+    sio = io.StringIO()
+    csv.writer(sio).writerow(fields)
+    return Response(sio.getvalue(), mimetype="text/csv")
+
+
+@app.get("/safe/format")
+def safe_format():
+    """FIX for /format: string.Template with a fixed, safe mapping. The user
+    cannot reach attributes or server secrets, only the names we pass in."""
+    template = request.args.get("template", "hi $name")
+    rendered = string.Template(template).safe_substitute(name="guest")
+    return {"template": template, "rendered": rendered,
+            "why_safe": "string.Template exposes only the names given to it; "
+                        "there is no attribute or index access to secrets"}
+
+
+_SAFE_IMPORTS = {"math", "statistics", "json", "decimal", "fractions"}
+
+
+@app.get("/safe/import")
+def safe_import():
+    """FIX for /import: import only names on an allow-list."""
+    module = request.args.get("module", "math")
+    if module not in _SAFE_IMPORTS:
+        return {"module": module, "accepted": False, "allowed": sorted(_SAFE_IMPORTS),
+                "why_safe": "only allow-listed modules may be imported"}, 400
+    mod = importlib.import_module(module)
+    return {"module": module, "attributes": [a for a in dir(mod) if not a.startswith("_")][:12]}
+
+
+@app.get("/safe/mkfifo")
+def safe_mkfifo():
+    """FIX for /mkfifo: reject any name with a path separator, so the FIFO can
+    only be created in the directory we chose."""
+    name = request.args.get("name", "demo.fifo")
+    if os.sep in name or (os.altsep and os.altsep in name) or name in (".", ".."):
+        return {"name": name, "accepted": False,
+                "why_safe": "names with a path separator are refused; the FIFO "
+                            "cannot escape its directory"}, 400
+    path = os.path.join(tempfile.gettempdir(), name)
+    try:
+        os.mkfifo(path)
+        os.unlink(path)
+        made = True
+    except OSError as exc:
+        made, path = False, f"{path} ({exc})"
+    return {"path": path, "created": made}
+
+
+_SAFE_LIBS = {"libc": "libc.so.6", "math": "libm.so.6"}
+
+
+@app.get("/safe/ctypes")
+def safe_ctypes():
+    """FIX for /ctypes: map a short friendly name to a vetted library path
+    through an allow-list, instead of loading an attacker-named file."""
+    key = request.args.get("lib", "libc")
+    target = _SAFE_LIBS.get(key)
+    if target is None:
+        return {"lib": key, "accepted": False, "allowed": sorted(_SAFE_LIBS),
+                "why_safe": "only allow-listed library names resolve to a path"}, 400
+    handle = ctypes.CDLL(target)
+    return {"lib": key, "resolved": target, "loaded": bool(handle._name)}
+
+
+
 # --------------------------------------------------------------------------- #
 # Catalog - single source of truth, also renders the landing page.
 # --------------------------------------------------------------------------- #
@@ -1672,6 +1943,27 @@ ENDPOINTS = [
      "socket", "redis Redis.eval", "Lua script injection", "nosql redis"),
 ]
 
+# Attach each vulnerable route's secure sibling (shown under it on the page).
+_SAFE_SIBLING = {
+    "/sqli": "/safe/sqli?name=alice",
+    "/cmd": "/safe/cmd?host=127.0.0.1",
+    "/cmd-subprocess": "/safe/cmd?host=127.0.0.1",
+    "/eval": "/safe/eval?expr=6*7",
+    "/exec": "/safe/exec?code=x=1",
+    "/pickle": "/safe/deserialize?data=%5B1,2,3%5D",
+    "/marshal": "/safe/deserialize?data=%5B1,2,3%5D",
+    "/path": "/safe/path?file=notes.txt",
+    "/ssrf": "/safe/ssrf?url=http://example.com",
+    "/xxe": "/safe/xml?doc=%3Cnote%3E%3Cto%3Eworld%3C%2Fto%3E%3C%2Fnote%3E",
+    "/redos": "/safe/redos?pattern=hello&text=hello%20world",
+    "/csv": "/safe/csv?row=name,total,=2%2B3",
+    "/format": "/safe/format?template=hi%20%24name",
+    "/import": "/safe/import?module=math",
+    "/mkfifo": "/safe/mkfifo?name=demo.fifo",
+    "/ctypes": "/safe/ctypes?lib=libc",
+}
+ENDPOINTS = [row + (_SAFE_SIBLING.get(row[2]),) for row in ENDPOINTS]
+
 # CLI demos (documented on the landing page; not HTTP routes).
 # group, source, script, command, flow, reports
 CLI_DEMOS = [
@@ -1777,10 +2069,38 @@ def _stopped_by_eyalsec(e):
     return e
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return app.send_static_file("favicon.ico")
+
+
+# Canned attack payloads for the POST endpoints, so the landing page's "Run"
+# buttons can send a real request from the browser (a link cannot carry a body).
+class _PickleRCE:
+    def __reduce__(self):
+        return (os.system, ("id",))
+
+
+@app.get("/sample/<name>")
+def sample_payload(name):
+    if name == "pickle":
+        data = pickle.dumps(_PickleRCE())
+    elif name == "marshal":
+        data = marshal.dumps(["attacker", "controlled", 1, 2, 3])
+    elif name == "xxe":
+        data = (b'<?xml version="1.0"?>\n'
+                b'<!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/hostname">]>\n'
+                b'<r>&x;</r>')
+    else:
+        return {"error": "unknown sample"}, 404
+    return Response(data, mimetype="application/octet-stream")
+
+
 @app.after_request
 def _open_source_page(resp):
     accept = request.headers.get("Accept", "")
-    if (request.endpoint == "index" or "text/html" not in accept
+    if (request.endpoint in ("index", "static", "favicon")
+            or "text/html" not in accept
             or resp.direct_passthrough
             or resp.mimetype not in ("text/html", "text/plain", "application/json")
             or 300 <= resp.status_code < 400):

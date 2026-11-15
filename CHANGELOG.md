@@ -8,6 +8,17 @@ Notable changes to vulnerable-python. The format follows
 
 ### Added
 
+- A secure counterpart for every injectable endpoint, under `/safe/...`
+  (parameterised SQL, an argument list with no shell, a contained file path,
+  an arithmetic evaluator, JSON instead of pickle/marshal, an allow-listed
+  import and library load, escaped regex and CSV, a sandboxed template). Each
+  one is linked beneath the vulnerable example on the landing page and works
+  with ordinary input while es-python stays quiet.
+- A **Run this attack** button on the landing page for the POST endpoints
+  (`/pickle`, `/marshal`, `/xxe`), which sends a canned payload from the
+  browser and shows the response, so they are clickable like the GET examples.
+- A favicon and a clear page title on every page (the EyalSec icon).
+
 - A live copy at [vp.eyalsec.com](https://vp.eyalsec.com), running this code
   unchanged under es-python.
 - An open-source banner on every page a browser opens, linking to this
