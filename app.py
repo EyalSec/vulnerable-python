@@ -1530,21 +1530,28 @@ _PING_TARGETS = {"127.0.0.1": "127.0.0.1", "localhost": "127.0.0.1"}
 
 @app.get("/safe/cmd")
 def safe_cmd():
-    """FIX for /cmd and /cmd-subprocess: look the host up in a fixed table and
-    launch ping with an argument list (no shell) built from OUR constant, not
-    from the request. '127.0.0.1; id' is simply absent from the table."""
+    """FIX for /cmd and /cmd-subprocess: never build a command from the request.
+    The host is looked up in a fixed table, and reachability is checked with a
+    library socket call to OUR constant address - no shell, no subprocess, so
+    there is no command for '127.0.0.1; id' to be smuggled into."""
     raw = request.args.get("host", "127.0.0.1")
     target = _PING_TARGETS.get(raw)
     if target is None:
         return {"host": raw, "accepted": False, "allowed": sorted(_PING_TARGETS),
-                "why_safe": "the host is not one we allow-list, so nothing runs; "
-                            "note that validating a string would not be enough - "
-                            "the launcher is only ever given our own constant"}, 400
-    out = subprocess.run(["ping", "-c", "1", "-w", "2", target],
-                         capture_output=True, text=True)  # no shell, constant argv
-    return {"host": raw, "accepted": True, "exit_code": out.returncode,
-            "stdout": out.stdout,
-            "why_safe": "an argument list with shell=False, built from a constant"}
+                "why_safe": "the host is not one we allow-list; nothing is run. "
+                            "Validating a string would not be enough on its own - "
+                            "the check only ever uses our own constant address"}, 400
+    reachable, detail = False, ""
+    for port in (5000, 80):
+        try:
+            with socket.create_connection((target, port), timeout=1):
+                reachable, detail = True, f"TCP {target}:{port} is open"
+                break
+        except OSError as exc:
+            detail = f"{target}: {exc}"
+    return {"host": raw, "accepted": True, "reachable": reachable, "detail": detail,
+            "why_safe": "reachability is checked with a socket call to a constant "
+                        "address; the request string never becomes a command"}
 
 
 def _safe_arith(expr):
