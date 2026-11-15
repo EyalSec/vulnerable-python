@@ -57,7 +57,8 @@ import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from flask import Flask, Response, request
+from flask import Flask, Response, g, request
+from werkzeug.exceptions import InternalServerError
 
 import demo_credentials
 import foreign_lab
@@ -1737,6 +1738,70 @@ CLI_DEMOS = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# Open source, on every page. Each page a browser sees carries a banner linking
+# to this repository, and to the exact lines of code behind that page.
+# VP_SOURCE_REF pins those links to a commit (default: main). VP_LIVE_DEMO=1
+# adds a line saying the copy runs under es-python.
+# --------------------------------------------------------------------------- #
+SOURCE_REF = os.environ.get("VP_SOURCE_REF", "main")
+LIVE_DEMO = os.environ.get("VP_LIVE_DEMO") == "1"
+
+
+def _source_line(endpoint):
+    fn = app.view_functions.get(endpoint) if endpoint else None
+    code = getattr(fn, "__code__", None)
+    return code.co_firstlineno if code else None
+
+
+def _source_lines():
+    lines = {}
+    for rule in app.url_map.iter_rules():
+        line = _source_line(rule.endpoint)
+        for method in rule.methods or ():
+            if line:
+                lines[(method, rule.rule)] = line
+    return lines
+
+
+@app.errorhandler(InternalServerError)
+def _stopped_by_eyalsec(e):
+    """es-python in Protect mode raises RuntimeError("EyalSec: ...") at the
+    operation. Say so plainly instead of showing a generic error page."""
+    orig = getattr(e, "original_exception", None)
+    msg = str(orig) if orig is not None else ""
+    if isinstance(orig, RuntimeError) and msg.startswith("EyalSec:"):
+        g.eyalsec_stopped = True
+        return Response("Stopped by EyalSec es-python.\n" + msg + "\n",
+                        status=403, mimetype="text/plain")
+    return e
+
+
+@app.after_request
+def _open_source_page(resp):
+    accept = request.headers.get("Accept", "")
+    if (request.endpoint == "index" or "text/html" not in accept
+            or resp.direct_passthrough
+            or resp.mimetype not in ("text/html", "text/plain", "application/json")
+            or 300 <= resp.status_code < 400):
+        return resp
+    title = "%s %s" % (request.method, request.path)
+    line = _source_line(request.endpoint)
+    stopped = bool(getattr(g, "eyalsec_stopped", False))
+    if request.endpoint is None:
+        body = "There is no page at this address."
+    elif resp.status_code >= 400 and not stopped:
+        body = resp.status
+    else:
+        body = resp.get_data(as_text=True)[:200000]
+    url = landing.code_link(SOURCE_REF, "app.py", line) if line else None
+    page = landing.response_page(title, body, code_url=url, line=line,
+                                 live=LIVE_DEMO, stopped=stopped)
+    resp.set_data(page)
+    resp.mimetype = "text/html"
+    return resp
+
+
 @app.get("/")
 def index():
     groups = {}
@@ -1744,7 +1809,9 @@ def index():
         groups.setdefault(row[0], []).append(row[1:])
     # Rendered in pure Python (see landing.py): markupsafe's compiled speedups
     # are not supported under es-python.
-    return Response(landing.render(groups, CLI_DEMOS), mimetype="text/html")
+    return Response(landing.render(groups, CLI_DEMOS, source_lines=_source_lines(),
+                                   ref=SOURCE_REF, live=LIVE_DEMO),
+                    mimetype="text/html")
 
 
 if __name__ == "__main__":

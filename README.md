@@ -1,6 +1,21 @@
 # vulnerable-python
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/EyalSec/vulnerable-python/badge)](https://scorecard.dev/viewer/?uri=github.com/EyalSec/vulnerable-python)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![Live demo](https://img.shields.io/badge/live%20demo-vp.eyalsec.com-black.svg)](https://vp.eyalsec.com)
+
+> ## This is open source. The live site at [vp.eyalsec.com](https://vp.eyalsec.com) is this code.
+>
+> **[vp.eyalsec.com](https://vp.eyalsec.com) runs the code in this repository, unchanged,
+> under EyalSec es-python.** Every page on that site has a big yellow banner that
+> links back here, and every endpoint has a **View the code** link to the exact
+> lines that serve it. What you see there is what you can read here.
+>
+> | | |
+> |---|---|
+> | **Read the code** | [`app.py`](app.py): every endpoint, one vulnerability each. [`landing.py`](landing.py): the page you see at `/`. |
+> | **Download it** | [Download ZIP](https://github.com/EyalSec/vulnerable-python/archive/refs/heads/main.zip), or `git clone https://github.com/EyalSec/vulnerable-python.git` |
+> | **License** | [MIT](LICENSE): use it, change it, share it. |
 
 An intentionally vulnerable Python web app, built as a live demonstration target
 for **[EyalSec](https://eyalsec.com)**. Each endpoint contains exactly one real
@@ -14,8 +29,10 @@ that reaches a sink is reported to your dashboard, or aborted at the sink.
 
 > ### Warning: this app is deliberately, dangerously insecure
 > Every route runs attacker-controlled input into a dangerous operation on
-> purpose. Run it **only on an isolated lab machine you control**. Never expose
-> it to the internet and never deploy it to production.
+> purpose. Run your own copy **only on an isolated lab machine you control**.
+> Never expose it to the internet and never deploy it to production. The public
+> copy at [vp.eyalsec.com](https://vp.eyalsec.com) runs in an isolated sandbox
+> with no network access, under es-python.
 
 ---
 

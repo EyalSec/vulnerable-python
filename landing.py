@@ -10,6 +10,65 @@ import html
 
 esc = html.escape  # quote=True by default -> attribute-safe
 
+# Where this app's code lives. Every page links here, so anyone looking at a
+# running copy can read the exact code behind what they see.
+REPO_URL = "https://github.com/EyalSec/vulnerable-python"
+ZIP_URL = REPO_URL + "/archive/refs/heads/main.zip"
+
+# The open-source banner at the top of every page. Large type and
+# black-on-yellow so nobody can miss it.
+BANNER_CSS = """
+  .os-banner{background:#ffd84a;color:#000;border-bottom:6px solid #000;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .os-banner .os-in{max-width:1080px;margin:0 auto;padding:28px 22px 30px}
+  .os-banner .os-kicker{margin:0 0 6px;font-size:20px;font-weight:800;
+    letter-spacing:.14em;text-transform:uppercase}
+  .os-banner .os-big{margin:0 0 18px;font-size:clamp(28px,5vw,48px);
+    line-height:1.15;font-weight:800;color:#000}
+  .os-banner .os-btns{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 16px}
+  .os-banner a.os-btn{display:inline-block;background:#000;color:#ffd84a;
+    font-size:22px;font-weight:800;padding:16px 26px;border-radius:10px;
+    border:3px solid #000;text-decoration:none;line-height:1.2}
+  .os-banner a.os-btn.os-alt{background:#fff;color:#000}
+  .os-banner a.os-btn:hover,.os-banner a.os-btn:focus{text-decoration:underline;
+    outline:4px solid #000;outline-offset:3px}
+  .os-banner .os-url{margin:0;font-size:20px;font-weight:700;color:#000;
+    word-break:break-word}
+  .os-banner .os-url a{color:#000;text-decoration:underline}
+  .os-banner .os-live{margin:12px 0 0;font-size:19px;font-weight:600;color:#000}
+"""
+
+
+def banner(code_url=None, live=False):
+    """The open-source banner. code_url, when given, adds a button straight to
+    the code behind the current page."""
+    btns = ['<a class="os-btn" href="%s">View the source code on GitHub</a>' % esc(REPO_URL),
+            '<a class="os-btn os-alt" href="%s">Download the code (ZIP)</a>' % esc(ZIP_URL)]
+    if code_url:
+        btns.append('<a class="os-btn os-alt" href="%s">See the code behind this page</a>'
+                    % esc(code_url))
+    live_html = ""
+    if live:
+        live_html = ('<p class="os-live">This live copy runs that same code, unchanged, '
+                     'under EyalSec es-python.</p>')
+    return (
+        '<section class="os-banner" aria-label="This website is open source">'
+        '<div class="os-in">'
+        '<p class="os-kicker">Open source</p>'
+        '<p class="os-big">This website is open source. '
+        'You can read every line of its code.</p>'
+        '<div class="os-btns">%s</div>'
+        '<p class="os-url">Code: <a href="%s">github.com/EyalSec/vulnerable-python</a>'
+        ' &middot; MIT License</p>%s'
+        '</div></section>'
+    ) % ("".join(btns), esc(REPO_URL), live_html)
+
+
+def code_link(ref, path, line=None):
+    """A GitHub link to a file of this repository, optionally at a line."""
+    url = "%s/blob/%s/%s" % (REPO_URL, ref, path)
+    return url + ("#L%d" % line if line else "")
+
 _HEAD = """<!doctype html>
 <html lang="en">
 <head>
@@ -41,6 +100,9 @@ _HEAD = """<!doctype html>
   .bar .tag{font-family:var(--mono);font-size:12px;color:var(--dim);
     border:1px solid var(--border-hi);border-radius:999px;padding:3px 10px}
   .bar nav a{font-size:14px;color:var(--body);margin-left:18px}
+  .bar nav a.src{color:#000;background:#ffd84a;font-weight:800;padding:6px 12px;border-radius:6px}
+  a.code{display:inline-block;margin-top:8px;font-size:14px;font-weight:700;color:#ffd84a;
+    text-decoration:underline}
   .hero{padding:56px 0 26px}
   .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.16em;
     text-transform:uppercase;color:var(--amber)}
@@ -109,13 +171,14 @@ _HEAD = """<!doctype html>
     .ep{grid-template-columns:1fr;gap:8px}
     .hero{padding:40px 0 18px}
   }
-</style>
+%%BANNER_CSS%%</style>
 </head>
 <body>
+%%BANNER%%
 <header class="bar"><div class="wrap">
   <span class="mark">vulnerable&#8209;<b>python</b></span>
   <span class="tag">EyalSec demo target</span>
-  <nav><a href="https://eyalsec.com">eyalsec.com</a><a href="#run">How to run</a></nav>
+  <nav><a class="src" href="https://github.com/EyalSec/vulnerable-python">Source code</a><a href="https://eyalsec.com">eyalsec.com</a><a href="#run">How to run</a></nav>
 </div></header>
 
 <div class="wrap">
@@ -201,6 +264,9 @@ python3.13 app.py</pre>
 </div></section>
 
 <footer><div class="wrap">
+  <p style="font-size:18px;color:#f2f1ea;margin:0 0 10px"><b>vulnerable-python is open source</b>
+  (MIT License). Read or download all of its code at
+  <a style="color:#ffd84a;text-decoration:underline" href="https://github.com/EyalSec/vulnerable-python">github.com/EyalSec/vulnerable-python</a>.</p>
   vulnerable-python is a security demonstration target for
   <a href="https://eyalsec.com">EyalSec</a>. It is intentionally insecure and exists only
   to show runtime taint tracking from source to sink. Isolated lab use only.
@@ -210,7 +276,11 @@ python3.13 app.py</pre>
 """
 
 
-def _endpoint_row(method, path, example, source, sink, vuln, reports):
+def _endpoint_row(method, path, example, source, sink, vuln, reports, code_url=None):
+    if code_url:
+        example_html_code = '<a class="code" href="%s">View the code</a>' % esc(code_url)
+    else:
+        example_html_code = ""
     if method == "GET":
         example_html = '<a class="example" href="%s">%s</a>' % (esc(example), esc(example))
     else:
@@ -218,27 +288,28 @@ def _endpoint_row(method, path, example, source, sink, vuln, reports):
     return (
         '<div class="ep">'
         '<div class="col-label">'
-        '<span class="method %s">%s</span><span class="path">%s</span>%s'
+        '<span class="method %s">%s</span><span class="path">%s</span>%s%s'
         '</div>'
         '<div><div class="vuln">%s</div>'
         '<div class="flow"><span class="pill">%s</span><span class="arrow">&rarr;</span>'
         '<span class="pill">%s</span></div></div>'
         '<div class="reports"><b>EyalSec reports</b>%s</div>'
         '</div>'
-    ) % (esc(method), esc(method), esc(path), example_html,
+    ) % (esc(method), esc(method), esc(path), example_html, example_html_code,
          esc(vuln), esc(source), esc(sink), esc(reports))
 
 
-def _cli_row(source, script, cmd, flow, reports):
+def _cli_row(source, script, cmd, flow, reports, code_url=None):
+    code_html = ('<a class="code" href="%s">View the code</a>' % esc(code_url)) if code_url else ""
     return (
         '<div class="ep">'
         '<div class="col-label"><span class="path">%s</span>'
-        '<span class="example static">%s</span></div>'
+        '<span class="example static">%s</span>%s</div>'
         '<div><div class="vuln">%s</div>'
         '<div class="flow"><span class="pill">%s</span></div></div>'
         '<div class="reports"><b>EyalSec reports</b>%s</div>'
         '</div>'
-    ) % (esc(script), esc(cmd), esc(flow), esc(source), esc(reports))
+    ) % (esc(script), esc(cmd), code_html, esc(flow), esc(source), esc(reports))
 
 
 def _group(rows):
@@ -249,17 +320,67 @@ def _group(rows):
     return grouped
 
 
-def render(groups, cli_demos):
-    parts = [_HEAD]
+def render(groups, cli_demos, source_lines=None, ref="main", live=False):
+    """source_lines maps (method, path) to the line in app.py where that
+    endpoint's code starts, so each row can link to it."""
+    source_lines = source_lines or {}
+    head = (_HEAD.replace("%%BANNER_CSS%%", BANNER_CSS)
+            .replace("%%BANNER%%", banner(live=live)))
+    parts = [head]
     for group, rows in groups.items():
         parts.append('<div class="grp"><h4>%s</h4>' % esc(group))
         for row in rows:
-            parts.append(_endpoint_row(*row))
+            line = source_lines.get((row[0], row[1]))
+            url = code_link(ref, "app.py", line) if line else None
+            parts.append(_endpoint_row(*row, code_url=url))
         parts.append('</div>')
     for group, rows in _group(cli_demos).items():
         parts.append('<div class="grp"><h4>%s</h4>' % esc(group))
         for row in rows:
-            parts.append(_cli_row(*row))
+            parts.append(_cli_row(*row, code_url=code_link(ref, row[1])))
         parts.append('</div>')
     parts.append(_TAIL)
+    return "".join(parts)
+
+
+_PAGE_CSS = """
+  *{box-sizing:border-box}
+  body{margin:0;background:#111310;color:#d6d8cd;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:18px;line-height:1.55}
+  main{max-width:1080px;margin:0 auto;padding:26px 22px 60px}
+  main a{color:#ffd84a;text-decoration:underline}
+  h1{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:#f2f1ea;
+    font-size:26px;margin:18px 0 8px;word-break:break-all}
+  h2{font-size:18px;color:#f2f1ea;margin:26px 0 8px}
+  pre{background:#181a15;border:1px solid #3a3d33;border-radius:8px;padding:16px;
+    overflow-x:auto;white-space:pre-wrap;word-break:break-word;font-size:15px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:#f2f1ea}
+  .stopped{background:#16260f;border:3px solid #a4d67f;border-radius:10px;
+    padding:18px 20px;margin:18px 0}
+  .stopped b{display:block;font-size:24px;color:#a4d67f;margin-bottom:6px}
+  .codecall{font-size:20px;font-weight:700}
+"""
+
+# What a browser sees for any page other than "/": the banner, then the
+# endpoint's own response shown as text (escaped, so it renders exactly as the
+# app returned it), then a link to the code that produced it.
+def response_page(title, body, code_url=None, line=None, live=False, stopped=False):
+    parts = ['<!doctype html><html lang="en"><head><meta charset="utf-8">'
+             '<meta name="viewport" content="width=device-width, initial-scale=1">'
+             '<title>%s - vulnerable-python (open source)</title><style>%s%s</style>'
+             '</head><body>' % (esc(title), BANNER_CSS, _PAGE_CSS),
+             banner(code_url=code_url, live=live),
+             '<main><p><a href="/">&larr; All endpoints</a></p>',
+             '<h1>%s</h1>' % esc(title)]
+    if stopped:
+        parts.append('<div class="stopped"><b>es-python stopped this request.</b>'
+                     'Untrusted input reached a dangerous operation, so the operation '
+                     'did not run. Below is what es-python reported.</div>')
+    parts.append('<h2>What the app sent back</h2><pre>%s</pre>' % esc(body))
+    if code_url:
+        where = ("app.py, line %d" % line) if line else "app.py"
+        parts.append('<p class="codecall"><a href="%s">See the code that produced this page '
+                     '(%s)</a></p>' % (esc(code_url), esc(where)))
+    parts.append('</main></body></html>')
     return "".join(parts)

@@ -8,6 +8,17 @@ Notable changes to vulnerable-python. The format follows
 
 ### Added
 
+- A live copy at [vp.eyalsec.com](https://vp.eyalsec.com), running this code
+  unchanged under es-python.
+- An open-source banner on every page a browser opens, linking to this
+  repository, the ZIP download and the exact lines of code behind that page.
+  Each endpoint on the landing page links to its code. curl and other
+  non-browser clients get the same responses as before.
+- When es-python stops a request in Protect mode, the page says so (HTTP 403)
+  instead of showing a generic error.
+- `VP_SOURCE_REF` pins the code links to a commit; `VP_LIVE_DEMO=1` adds the
+  es-python line to the banner.
+
 - A container image, `ghcr.io/eyalsec/vulnerable-python`, built from `main`
   for `linux/amd64` and `linux/arm64` with a signed build provenance
   attestation (`Dockerfile`, `.github/workflows/container.yml`).

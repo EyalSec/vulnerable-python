@@ -53,3 +53,32 @@ def test_path_traversal_still_escapes_the_sample_dir(client):
     resp = client.get("/path", query_string={"file": "../flag.txt"})
     assert resp.status_code == 200
     assert "EYALSEC{path_traversal_escaped_the_sandbox}" in resp.get_data(as_text=True)
+
+
+BROWSER = {"Accept": "text/html,application/xhtml+xml"}
+
+
+def test_every_browser_page_says_open_source_and_links_to_the_code(client):
+    home = client.get("/", headers=BROWSER).get_data(as_text=True)
+    assert "This website is open source" in home
+    assert "https://github.com/EyalSec/vulnerable-python" in home
+    assert "/archive/refs/heads/main.zip" in home
+    assert home.count("View the code") >= len(demo.ENDPOINTS)
+
+    for path in ("/sqli?name=alice", "/no-such-page"):
+        page = client.get(path, headers=BROWSER).get_data(as_text=True)
+        assert "This website is open source" in page, path
+    page = client.get("/sqli?name=alice", headers=BROWSER).get_data(as_text=True)
+    assert "See the code behind this page" in page
+    assert "/blob/main/app.py#L" in page
+
+
+def test_non_browser_clients_get_the_plain_response(client):
+    resp = client.get("/sqli?name=alice")
+    assert resp.mimetype == "application/json"
+    assert "open source" not in resp.get_data(as_text=True)
+
+
+def test_browser_view_escapes_the_response(client):
+    page = client.get("/sqli?name=<b>x</b>", headers=BROWSER).get_data(as_text=True)
+    assert "<b>x</b>" not in page
