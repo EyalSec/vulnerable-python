@@ -13,56 +13,6 @@ esc = html.escape  # quote=True by default -> attribute-safe
 # Where this app's code lives. Every page links here, so anyone looking at a
 # running copy can read the exact code behind what they see.
 REPO_URL = "https://github.com/EyalSec/vulnerable-python"
-ZIP_URL = REPO_URL + "/archive/refs/heads/main.zip"
-
-# The open-source banner at the top of every page. Large type and
-# black-on-yellow so nobody can miss it.
-BANNER_CSS = """
-  .os-banner{background:#ffd84a;color:#000;border-bottom:6px solid #000;
-    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-  .os-banner .os-in{max-width:1080px;margin:0 auto;padding:28px 22px 30px}
-  .os-banner .os-kicker{margin:0 0 6px;font-size:20px;font-weight:800;
-    letter-spacing:.14em;text-transform:uppercase}
-  .os-banner .os-big{margin:0 0 18px;font-size:clamp(28px,5vw,48px);
-    line-height:1.15;font-weight:800;color:#000}
-  .os-banner .os-btns{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 16px}
-  .os-banner a.os-btn{display:inline-block;background:#000;color:#ffd84a;
-    font-size:22px;font-weight:800;padding:16px 26px;border-radius:10px;
-    border:3px solid #000;text-decoration:none;line-height:1.2}
-  .os-banner a.os-btn.os-alt{background:#fff;color:#000}
-  .os-banner a.os-btn:hover,.os-banner a.os-btn:focus{text-decoration:underline;
-    outline:4px solid #000;outline-offset:3px}
-  .os-banner .os-url{margin:0;font-size:20px;font-weight:700;color:#000;
-    word-break:break-word}
-  .os-banner .os-url a{color:#000;text-decoration:underline}
-  .os-banner .os-live{margin:12px 0 0;font-size:19px;font-weight:600;color:#000}
-"""
-
-
-def banner(code_url=None, live=False):
-    """The open-source banner. code_url, when given, adds a button straight to
-    the code behind the current page."""
-    btns = ['<a class="os-btn" href="%s">View the source code on GitHub</a>' % esc(REPO_URL),
-            '<a class="os-btn os-alt" href="%s">Download the code (ZIP)</a>' % esc(ZIP_URL)]
-    if code_url:
-        btns.append('<a class="os-btn os-alt" href="%s">See the code behind this page</a>'
-                    % esc(code_url))
-    live_html = ""
-    if live:
-        live_html = ('<p class="os-live">This live copy runs that same code, unchanged, '
-                     'under EyalSec es-python.</p>')
-    return (
-        '<section class="os-banner" aria-label="This website is open source">'
-        '<div class="os-in">'
-        '<p class="os-kicker">Open source</p>'
-        '<p class="os-big">This website is open source. '
-        'You can read every line of its code.</p>'
-        '<div class="os-btns">%s</div>'
-        '<p class="os-url">Code: <a href="%s">github.com/EyalSec/vulnerable-python</a>'
-        ' &middot; MIT License</p>%s'
-        '</div></section>'
-    ) % ("".join(btns), esc(REPO_URL), live_html)
-
 
 def code_link(ref, path, line=None):
     """A GitHub link to a file of this repository, optionally at a line."""
@@ -190,10 +140,9 @@ _HEAD = """<!doctype html>
     padding:4px 10px;cursor:pointer}
   .copybtn:hover{border-color:var(--amber)}
   .posthint{display:block;margin-top:5px;color:var(--dim);font-size:12px}
-%%BANNER_CSS%%</style>
+</style>
 </head>
 <body>
-%%BANNER%%
 <header class="bar"><div class="wrap">
   <span class="mark">vulnerable&#8209;<b>python</b></span>
   <span class="tag">EyalSec demo target</span>
@@ -203,7 +152,7 @@ _HEAD = """<!doctype html>
 <div class="wrap">
   <div class="hero">
     <div class="kicker">Intentionally vulnerable by design</div>
-    <h1>One app. Every injection. See what EyalSec catches.</h1>
+    <h1>One open source app. Every injection. See what EyalSec catches.</h1>
     <p class="lede">This is a deliberately insecure Python web app. Each endpoint carries a
       single, real vulnerability wired from a distinct <b>taint source</b> into a distinct
       <b>sink</b>. Run it under plain python3 and it is a normal, silently exploitable app.
@@ -378,9 +327,7 @@ def render(groups, cli_demos, source_lines=None, ref="main", live=False):
     """source_lines maps (method, path) to the line in app.py where that
     endpoint's code starts, so each row can link to it."""
     source_lines = source_lines or {}
-    head = (_HEAD.replace("%%BANNER_CSS%%", BANNER_CSS)
-            .replace("%%BANNER%%", banner(live=live)))
-    parts = [head]
+    parts = [_HEAD]
     for group, rows in groups.items():
         parts.append('<div class="grp"><h4>%s</h4>' % esc(group))
         for row in rows:
@@ -416,9 +363,9 @@ _PAGE_CSS = """
   .codecall{font-size:20px;font-weight:700}
 """
 
-# What a browser sees for any page other than "/": the banner, then the
-# endpoint's own response shown as text (escaped, so it renders exactly as the
-# app returned it), then a link to the code that produced it.
+# What a browser sees for any page other than "/": the endpoint's own response
+# shown as text (escaped, so it renders exactly as the app returned it), then a
+# link to the code that produced it.
 def response_page(title, body, code_url=None, line=None, live=False, stopped=False):
     parts = ['<!doctype html><html lang="en"><head><meta charset="utf-8">'
              '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -427,9 +374,8 @@ def response_page(title, body, code_url=None, line=None, live=False, stopped=Fal
              '<link rel="icon" type="image/png" href="/static/icon-192.png" sizes="192x192">'
              '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
              '<meta name="theme-color" content="#111310">'
-             '<style>%s%s</style>'
-             '</head><body>' % (esc(title), BANNER_CSS, _PAGE_CSS),
-             banner(code_url=code_url, live=live),
+             '<style>%s</style>'
+             '</head><body>' % (esc(title), _PAGE_CSS),
              '<main><p><a href="/">&larr; All endpoints</a></p>',
              '<h1>%s</h1>' % esc(title)]
     if stopped:

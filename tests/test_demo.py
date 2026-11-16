@@ -58,18 +58,17 @@ def test_path_traversal_still_escapes_the_sample_dir(client):
 BROWSER = {"Accept": "text/html,application/xhtml+xml"}
 
 
-def test_every_browser_page_says_open_source_and_links_to_the_code(client):
+def test_home_says_open_source_and_links_to_the_code(client):
     home = client.get("/", headers=BROWSER).get_data(as_text=True)
-    assert "This website is open source" in home
+    assert "One open source app" in home
+    assert "vulnerable-python is open source" in home
     assert "https://github.com/EyalSec/vulnerable-python" in home
-    assert "/archive/refs/heads/main.zip" in home
     assert home.count("View the code") >= len(demo.ENDPOINTS)
 
-    for path in ("/sqli?name=alice", "/no-such-page"):
-        page = client.get(path, headers=BROWSER).get_data(as_text=True)
-        assert "This website is open source" in page, path
+
+def test_every_browser_page_links_to_the_code(client):
     page = client.get("/sqli?name=alice", headers=BROWSER).get_data(as_text=True)
-    assert "See the code behind this page" in page
+    assert "See the code that produced this page" in page
     assert "/blob/main/app.py#L" in page
 
 
