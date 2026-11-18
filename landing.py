@@ -389,3 +389,413 @@ def response_page(title, body, code_url=None, line=None, live=False, stopped=Fal
                      '(%s)</a></p>' % (esc(code_url), esc(where)))
     parts.append('</main></body></html>')
     return "".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# The page a browser sees when es-python stops an attack.
+#
+# It reads in the order the event happened: the alarm (what was attempted, and
+# how bad it is), the relief (it was stopped, and nothing ran), then the proof:
+# the attacker's input, the app's own code with the line that never ran, the
+# exact value that reached the operation, what es-python reported, and the safe
+# way to write the same endpoint. Every value on it comes from the request that
+# was stopped; nothing is invented for the page.
+# --------------------------------------------------------------------------- #
+
+_RCE = "Remote code execution"
+
+# path -> severity, CWE, attack name, what was attempted, what did not happen,
+# what plain Python does with the same request, and how the safe version works.
+THREATS = {
+    "/sqli": ("Critical", "CWE-89", "SQL injection",
+              "Someone just tried to pull every user's password and API key out of this app's database.",
+              "The query never reached the database.",
+              "On plain Python this exact request returns all three users: alice's password, "
+              "bob's API token and the admin's root key.",
+              "passes the name as a bound parameter, so it can never change the query."),
+    "/cmd": ("Critical", "CWE-78", _RCE + " (command injection)",
+             "Someone just tried to run their own commands on this server.",
+             "The shell never started.",
+             "On plain Python the shell runs ping, then every command after the ';', "
+             "with the app's own permissions.",
+             "checks reachability with a socket to a fixed address. No shell at all."),
+    "/cmd-subprocess": ("Critical", "CWE-78", _RCE + " (command injection)",
+                        "Someone just tried to run their own commands on this server.",
+                        "The shell never started.",
+                        "On plain Python the shell runs ping, then every command after the ';', "
+                        "and sends the output back to the attacker.",
+                        "checks reachability with a socket to a fixed address. No shell at all."),
+    "/eval": ("Critical", "CWE-95", _RCE + " (eval injection)",
+              "Someone just tried to run their own Python code inside this app.",
+              "The code never ran.",
+              "On plain Python eval runs any expression in the URL, "
+              "including __import__('os').system(...).",
+              "uses a small arithmetic parser, so input is only ever numbers and operators."),
+    "/exec": ("Critical", "CWE-94", _RCE + " (code injection)",
+              "Someone just tried to run their own Python code inside this app.",
+              "The code never ran.",
+              "On plain Python exec runs any statement in the URL: open files, "
+              "start processes, read secrets.",
+              "reads the input as JSON data, never as code."),
+    "/foreign/untrusted/socket": ("Critical", "CWE-94", _RCE + " (code injection)",
+                                  "Someone just tried to run their own Python code inside this app.",
+                                  "The code never ran.",
+                                  "On plain Python the request body runs as code with the app's permissions.",
+                                  None),
+    "/path": ("High", "CWE-22", "Path traversal",
+              "Someone just tried to read a file outside the folder this app serves.",
+              "The file was never opened.",
+              "On plain Python '../' walks out of the sample folder and the app returns the file.",
+              "looks the name up in an allow-list and opens only a file name the app chose."),
+    "/mkfifo": ("High", "CWE-22", "Path injection",
+                "Someone just tried to create a file outside this app's folder.",
+                "Nothing was created.",
+                "On plain Python '../' places the new file wherever the attacker points it.",
+                "looks the name up in an allow-list and uses a file name the app chose."),
+    "/ctypes": ("Critical", "CWE-114", _RCE + " (native library load)",
+                "Someone just tried to load a native library of their choosing into this process.",
+                "The library was never loaded.",
+                "On plain Python the library's own code runs the moment it loads.",
+                "maps a short name to a library path on an allow-list."),
+    "/import": ("Critical", "CWE-470", _RCE + " (dynamic import)",
+                "Someone just tried to make this app import a module of their choosing.",
+                "The module was never imported.",
+                "On plain Python the named module loads and its top-level code runs.",
+                "imports only module names on an allow-list."),
+    "/redos": ("High", "CWE-1333", "Denial of service (ReDoS)",
+               "Someone just tried to freeze this server with a pattern built never to finish.",
+               "The pattern never ran.",
+               "On plain Python this pattern pins a CPU core for as long as the attacker likes.",
+               "escapes the input with re.escape, so it is searched for literally."),
+    "/csv": ("Medium", "CWE-1236", "CSV formula injection",
+             "Someone just tried to plant a formula that runs when the next person opens this export.",
+             "The row was never written.",
+             "On plain Python the formula lands in the file and runs in the spreadsheet of whoever opens it.",
+             "puts a quote before any field that starts with = + - @, so a spreadsheet reads it as text."),
+    "/format": ("High", "CWE-134", "Format string injection",
+                "Someone just tried to read this app's secrets through a format string.",
+                "The template was never filled in.",
+                "On plain Python the template reaches into the app's objects and prints what it finds.",
+                "uses string.Template with only the values the app chose."),
+    "/ssrf": ("High", "CWE-918", "Server-side request forgery",
+              "Someone just tried to make this server fetch an internal address for them.",
+              "No connection was opened.",
+              "On plain Python the server fetches the address and hands the response to the attacker.",
+              "allows only hosts on a fixed list."),
+    "/adapter/jinja2": ("Critical", "CWE-1336", _RCE + " (template injection)",
+                        "Someone just tried to run code through this app's template engine.",
+                        "The template never rendered.",
+                        "On plain Python a crafted template reaches os and runs commands.", None),
+    "/adapter/yaml": ("Critical", "CWE-502", _RCE + " (unsafe YAML load)",
+                      "Someone just tried to make this app build objects of their choosing from YAML.",
+                      "The document was never loaded.",
+                      "On plain Python a YAML tag can construct any Python object, including os.system calls.",
+                      None),
+    "/adapter/sqlalchemy": ("Critical", "CWE-89", "SQL injection",
+                            "Someone just tried to rewrite this app's database query.",
+                            "The query never reached the database.",
+                            "On plain Python the injected text becomes part of the SQL.", None),
+    "/adapter/mongo": ("High", "CWE-943", "NoSQL injection",
+                       "Someone just tried to rewrite this app's database query.",
+                       "The query never reached the database.",
+                       "On plain Python an operator in the input changes which documents match.", None),
+    "/adapter/mark-safe": ("High", "CWE-79", "Cross-site scripting",
+                           "Someone just tried to inject script into a page other people see.",
+                           "The markup was never trusted.",
+                           "On plain Python the script runs in every visitor's browser.", None),
+    "/source/env": ("Critical", "CWE-78", _RCE + " (command injection)",
+                    "A value from the environment just tried to run as a shell command.",
+                    "The shell never started.",
+                    "On plain Python the shell runs whatever the variable holds.", None),
+}
+
+_SEV_CLASS = {"Critical": "crit", "High": "high", "Medium": "med"}
+
+_BLOCK_CSS = """
+  :root{--bg:#0e100d;--panel:#161812;--panel2:#1b1d17;--line:#2b2e26;--ink:#f4f3ec;
+    --body:#c4c6ba;--dim:#8f9187;--red:#ff5a4f;--red-bg:#2a0f0d;--green:#8fdc6a;
+    --green-bg:#0f2109;--gold:#ffd84a;--amber:#efb454;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--body);font-family:var(--sans);
+    font-size:17px;line-height:1.55}
+  a{color:var(--gold)}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 22px}
+  .top{display:flex;justify-content:space-between;align-items:center;padding:16px 0;
+    font-size:14px}
+  .top a{color:var(--dim);text-decoration:none}.top a:hover{color:var(--ink)}
+  .alarm{background:var(--red-bg);border-top:1px solid #5c1e19;border-bottom:1px solid #5c1e19}
+  .alarm .wrap{padding-top:30px;padding-bottom:30px}
+  .siren{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);
+    font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--red)}
+  .dot{width:11px;height:11px;border-radius:50%;background:var(--red);
+    box-shadow:0 0 0 0 rgba(255,90,79,.7);animation:pulse 1.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,90,79,.7)}
+    70%{box-shadow:0 0 0 12px rgba(255,90,79,0)}100%{box-shadow:0 0 0 0 rgba(255,90,79,0)}}
+  .threat{font-size:clamp(22px,3.4vw,32px);line-height:1.2;color:#ffd9d5;font-weight:650;
+    margin:14px 0 0;max-width:30ch}
+  .tags{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .tag{font-family:var(--mono);font-size:12.5px;padding:4px 10px;border-radius:5px;
+    border:1px solid #5c1e19;color:#ffb3ab}
+  .tag.crit{background:var(--red);color:#1a0503;border-color:var(--red);font-weight:800}
+  .tag.high{background:#ff8f3a;color:#1d0c00;border-color:#ff8f3a;font-weight:800}
+  .tag.med{background:var(--amber);color:#1d1400;border-color:var(--amber);font-weight:800}
+  .saved{background:var(--green-bg);border-bottom:1px solid #2f5a1f;
+    animation:arrive .5s ease-out .25s both}
+  @keyframes arrive{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:none}}
+  .saved .wrap{padding-top:30px;padding-bottom:32px;display:grid;
+    grid-template-columns:auto 1fr;gap:22px;align-items:center}
+  .shield{width:64px;height:64px;border-radius:50%;background:var(--green);color:#0b1a05;
+    display:grid;place-items:center;font-size:36px;font-weight:900}
+  .saved h1{margin:0;font-size:clamp(30px,5.4vw,52px);line-height:1.04;color:var(--ink);
+    letter-spacing:-.015em;font-weight:750}
+  .saved h1 span{color:var(--green)}
+  .saved p{margin:10px 0 0;font-size:18px;color:#cfe8c2;max-width:62ch}
+  .verdict{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:28px 0 8px}
+  .verdict div{background:var(--panel);padding:14px 18px}
+  .verdict small{display:block;font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--dim)}
+  .verdict b{font-size:20px;color:var(--ink)}
+  .verdict .r{color:var(--red)}.verdict .g{color:var(--green)}
+  section{padding:26px 0 4px}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.13em;text-transform:uppercase;
+    color:var(--amber);margin:0 0 10px}
+  h2 i{font-style:normal;color:var(--dim);margin-right:8px}
+  .lead{margin:0 0 12px;color:var(--body)}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+  .url{font-family:var(--mono);font-size:15px;color:var(--ink);word-break:break-all}
+  mark{background:rgba(255,90,79,.22);color:#ffb3ab;border-bottom:2px solid var(--red);
+    padding:0 2px;border-radius:2px}
+  .code{background:#0b0c0a;border:1px solid var(--line);border-radius:10px;overflow-x:auto;
+    font-family:var(--mono);font-size:14px;line-height:1.6;padding:10px 0}
+  .ln{display:grid;grid-template-columns:4.2em 1fr;white-space:pre;padding:0 16px 0 0}
+  .ln .n{color:#53564d;text-align:right;padding-right:16px;user-select:none}
+  .ln .t{color:#d8dacf}
+  .ln .t s{text-decoration:none}
+  .ln.hit{background:rgba(255,90,79,.13);box-shadow:inset 4px 0 0 var(--red)}
+  .ln.hit .n{color:var(--red);font-weight:700}
+  .ln.hit .t{color:#ffd0cb}
+  .ln.hit .t s{text-decoration:line-through;text-decoration-color:var(--red);
+    text-decoration-thickness:2px}
+  .stamp{display:grid;grid-template-columns:4.2em 1fr;padding:2px 16px 8px 0;
+    background:rgba(255,90,79,.13);box-shadow:inset 4px 0 0 var(--red)}
+  .stamp span{grid-column:2;font-family:var(--sans);font-size:13.5px;font-weight:800;
+    color:var(--red);letter-spacing:.03em}
+  .vals{display:grid;gap:10px}
+  .val{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
+    border-radius:8px;padding:12px 16px}
+  .val .k{font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+  .val pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);
+    font-size:15px;color:var(--ink)}
+  .without{margin-top:12px;padding:12px 16px;border-radius:8px;background:var(--red-bg);
+    border:1px solid #5c1e19;color:#ffd0cb}
+  .without b{color:var(--red)}
+  ol.steps{list-style:none;margin:0;padding:0;border-left:2px solid var(--line);margin-left:9px}
+  ol.steps li{position:relative;padding:0 0 18px 26px}
+  ol.steps li::before{content:"";position:absolute;left:-8px;top:5px;width:14px;height:14px;
+    border-radius:50%;background:var(--panel2);border:2px solid var(--dim)}
+  ol.steps li.bad::before{border-color:var(--red);background:var(--red-bg)}
+  ol.steps li.good::before{border-color:var(--green);background:var(--green)}
+  ol.steps b{color:var(--ink)}
+  ol.steps .ms{font-family:var(--mono);font-size:12.5px;color:var(--dim);margin-left:6px}
+  ol.steps p{margin:2px 0 0;font-size:15px}
+  .report{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);
+    font-size:14px;color:var(--ink)}
+  .fix{border-left:4px solid var(--green)}
+  .fix a.btn{display:inline-block;margin-top:10px;background:var(--green);color:#0b1a05;
+    font-weight:800;text-decoration:none;padding:9px 16px;border-radius:7px}
+  .fix code{font-family:var(--mono);color:var(--green)}
+  .links{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:6px;font-size:15px}
+  footer{margin-top:36px;border-top:1px solid var(--line);padding:22px 0 56px;font-size:14px;color:var(--dim)}
+  footer b{color:var(--ink)}
+  @media (max-width:720px){
+    .saved .wrap{grid-template-columns:1fr;gap:14px}
+    .shield{width:52px;height:52px;font-size:28px}
+    .verdict{grid-template-columns:1fr}
+    .code{font-size:12.5px}
+    .ln,.stamp{grid-template-columns:3em 1fr}
+  }
+  @media (prefers-reduced-motion:reduce){.dot,.saved{animation:none}}
+"""
+
+
+def _marked(text, needles):
+    """Escape text, wrapping every occurrence of an attacker-supplied value in
+    <mark>, so the reader can see their input inside what the app built."""
+    needles = sorted({n for n in needles if n and len(n) >= 2 and n in text},
+                     key=len, reverse=True)
+    if not needles:
+        return esc(text)
+    out, i = [], 0
+    while i < len(text):
+        hit = next((n for n in needles if text.startswith(n, i)), None)
+        if hit:
+            out.append("<mark>%s</mark>" % esc(hit))
+            i += len(hit)
+        else:
+            j = i + 1
+            while j < len(text) and not any(text.startswith(n, j) for n in needles):
+                j += 1
+            out.append(esc(text[i:j]))
+            i = j
+    return "".join(out)
+
+
+def _source_phrase(report, source):
+    if "from fd:" in report or "socket" in report or source == "socket":
+        return "the web request"
+    if source and source != "-":
+        return "the %s source" % source
+    return "outside this app"
+
+
+def _code_panel(block):
+    first, lines, stop = block.get("first_line"), block.get("lines") or [], block.get("stop_line")
+    if not first or not lines:
+        return ""
+    rows = []
+    for idx, text in enumerate(lines):
+        n = first + idx
+        cls = "ln"
+        if stop and n == stop:
+            cls += " hit"
+        body = text.lstrip(" ")
+        indent = text[:len(text) - len(body)]
+        rows.append('<div class="%s"><span class="n">%d</span><span class="t">%s<s>%s</s></span></div>'
+                    % (cls, n, indent, esc(body)) if body else
+                    '<div class="%s"><span class="n">%d</span><span class="t"> </span></div>' % (cls, n))
+        if stop and n == stop:
+            rows.append('<div class="stamp"><span>&#9940; STOPPED HERE. es-python raised an error '
+                        'on this line, so this call never ran.</span></div>')
+    return '<div class="code">%s</div>' % "".join(rows)
+
+
+def blocked_page(method, path, full_path, args, block, vuln=None, source=None,
+                 sink=None, safe=None, code_url=None):
+    t = THREATS.get(path)
+    report = block.get("report", "")
+    sink_txt = sink or report.rsplit("reached sink", 1)[-1].strip() or "a dangerous operation"
+    if t:
+        sev, cwe, kind, threat, never, without, fix = t
+    elif "sqlite" in sink_txt or "sql" in sink_txt.lower():
+        sev, cwe, kind = "Critical", "CWE-89", vuln or "SQL injection"
+        threat = "Untrusted data just tried to rewrite this app's database query."
+        never, without, fix = "The query never reached the database.", None, None
+    elif any(w in sink_txt for w in ("os.system", "subprocess", "shell")):
+        sev, cwe, kind = "Critical", "CWE-78", vuln or _RCE
+        threat = "Untrusted data just tried to run as a shell command on this server."
+        never, without, fix = "The shell never started.", None, None
+    else:
+        sev, cwe, kind = "High", None, vuln or "Injection attack"
+        threat = "Untrusted data just tried to reach %s inside this app." % sink_txt
+        never, without, fix = "That operation never ran.", None, None
+    sev_cls = _SEV_CLASS.get(sev, "high")
+    origin = _source_phrase(report, source)
+    stop = block.get("stop_line")
+    func = block.get("function") or "the route"
+    ms = block.get("ms")
+    ms_txt = ("%.1f ms" % ms) if ms is not None else None
+
+    p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">'
+         '<meta name="viewport" content="width=device-width, initial-scale=1">'
+         '<title>Blocked: %s &middot; vulnerable-python (EyalSec)</title>'
+         '<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">'
+         '<link rel="icon" type="image/png" href="/static/icon-192.png" sizes="192x192">'
+         '<meta name="theme-color" content="#2a0f0d">'
+         '<meta name="robots" content="noindex">'
+         '<style>%s</style></head><body>' % (esc(kind), _BLOCK_CSS)]
+    p.append('<div class="wrap top"><a href="/">&larr; All endpoints</a>'
+             '<a href="https://eyalsec.com">EyalSec es-python</a></div>')
+
+    # 1. The alarm.
+    p.append('<div class="alarm"><div class="wrap">'
+             '<div class="siren"><span class="dot"></span>%s vulnerability &middot; attack caught live</div>'
+             '<p class="threat">%s</p><div class="tags">'
+             '<span class="tag %s">%s</span><span class="tag">%s</span>%s'
+             '<span class="tag">%s %s</span></div></div></div>'
+             % (esc(sev), esc(threat), sev_cls, esc(sev.upper()), esc(kind),
+                ('<span class="tag">%s</span>' % esc(cwe)) if cwe else "",
+                esc(method), esc(path)))
+
+    # 2. The relief.
+    p.append('<div class="saved"><div class="wrap"><div class="shield" aria-hidden="true">&#10003;</div>'
+             '<div><h1>Blocked. <span>%s</span></h1>'
+             '<p>es-python saw input from %s reach <b>%s</b> and stopped it on that exact line%s. '
+             'The app raised an error instead of running it.</p></div></div></div>'
+             % (esc(never), esc(origin), esc(sink_txt),
+                (", %s after the request arrived" % esc(ms_txt)) if ms_txt else ""))
+
+    p.append('<main class="wrap">')
+    p.append('<div class="verdict">'
+             '<div><small>Severity</small><b class="r">%s</b></div>'
+             '<div><small>Attack</small><b class="g">Stopped before it ran</b></div>'
+             '<div><small>Damage</small><b class="g">None</b></div></div>' % esc(sev))
+
+    # 3. The attack.
+    p.append('<section><h2><i>01</i>The attack</h2>'
+             '<p class="lead">This is the request that came in. The attacker\'s input is marked.</p>'
+             '<div class="box url">%s</div></section>'
+             % _marked("%s %s" % (method, full_path), args))
+
+    # 4. The code that did not run.
+    panel = _code_panel(block)
+    if panel:
+        p.append('<section><h2><i>02</i>The vulnerable code</h2>'
+                 '<p class="lead">This is the real code of this endpoint, <code>%s()</code> in app.py. '
+                 'It has the bug on purpose. Line %s is where the attack would have gone off.</p>%s</section>'
+                 % (esc(func), esc(str(stop)) if stop else "?", panel))
+
+    # 5. What it would have run.
+    vals = block.get("values") or []
+    if vals:
+        items = "".join('<div class="val"><div class="k">%s =</div><pre>%s</pre></div>'
+                        % (esc(k), _marked(v, args)) for k, v in vals)
+        p.append('<section><h2><i>03</i>What it was about to run</h2>'
+                 '<p class="lead">The values inside <code>%s()</code> at the moment it was stopped. '
+                 'This is exactly what would have reached <b>%s</b>.</p><div class="vals">%s</div>%s</section>'
+                 % (esc(func), esc(sink_txt), items,
+                    ('<div class="without"><b>Without es-python:</b> %s</div>' % esc(without))
+                    if without else ""))
+
+    # 6. What es-python did, in order.
+    steps = [
+        ("bad", "Request arrived", "%s %s" % (method, path), "0 ms"),
+        ("bad", "Input tracked as untrusted",
+         "es-python followed the input from %s through the app's own code." % origin, None),
+        ("bad", "Reached %s" % sink_txt,
+         "app.py line %s, inside %s(). This is the dangerous operation." % (stop or "?", func), None),
+        ("good", "Stopped before it ran",
+         "es-python raised an error instead of running it. Nothing was executed.", ms_txt),
+        ("good", "Answered with this page",
+         "HTTP 403. The event was reported to the EyalSec dashboard.", None),
+    ]
+    p.append('<section><h2><i>04</i>What happened, step by step</h2><ol class="steps">')
+    for cls, title, text, when in steps:
+        p.append('<li class="%s"><b>%s</b>%s<p>%s</p></li>'
+                 % (cls, esc(title), ('<span class="ms">+%s</span>' % esc(when)) if when else "",
+                    esc(text)))
+    p.append('</ol><div class="box"><p class="report">%s</p></div></section>' % esc(report))
+
+    # 7. The fix.
+    if safe:
+        p.append('<section><h2><i>05</i>The safe way to write it</h2>'
+                 '<div class="box fix">The safe version of this endpoint %s '
+                 'es-python lets it run, because nothing untrusted reaches the operation.<br>'
+                 '<a class="btn" href="%s">Try the safe version</a></div></section>'
+                 % (esc(fix) if fix else "does the same job without passing untrusted input through.",
+                    esc(safe)))
+
+    links = []
+    if code_url:
+        links.append('<a href="%s">Read this code on GitHub (app.py line %s)</a>'
+                     % (esc(code_url), esc(str(stop)) if stop else ""))
+    links.append('<a href="/">Try another attack</a>')
+    p.append('<section><div class="links">%s</div></section>' % "".join(links))
+    p.append('</main><footer><div class="wrap"><b>vulnerable-python</b> is an open-source app '
+             'that is insecure on purpose, running under <b>EyalSec es-python</b>. '
+             'Want this on your own Python services? '
+             '<a href="https://eyalsec.com/contact">Book a live demo</a>.</div></footer>'
+             '</body></html>')
+    return "".join(p)

@@ -40,6 +40,7 @@ import ctypes
 import importlib
 import importlib.machinery
 import importlib.util
+import inspect
 import io
 import json
 import logging
@@ -56,6 +57,7 @@ import string
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -2124,6 +2126,49 @@ def _source_lines():
     return lines
 
 
+@app.before_request
+def _start_clock():
+    g.t0 = time.perf_counter()
+
+
+def _stopped_frame(exc, code):
+    """The traceback entry of the route function itself: the line that was
+    running when es-python raised, and that function's variables at that
+    moment. Those are the values that reached the dangerous operation."""
+    tb = exc.__traceback__
+    while tb is not None:
+        if code is not None and tb.tb_frame.f_code is code:
+            return tb
+        tb = tb.tb_next
+    return None
+
+
+def _block_details(exc, msg):
+    fn = app.view_functions.get(request.endpoint) if request.endpoint else None
+    code = getattr(fn, "__code__", None)
+    tb = _stopped_frame(exc, code)
+    values = []
+    if tb is not None:
+        for name, value in tb.tb_frame.f_locals.items():
+            if name.startswith("_") or isinstance(value, bool):
+                continue
+            if isinstance(value, str):
+                values.append((name, value[:2000]))
+            elif isinstance(value, (bytes, int, float)):
+                values.append((name, repr(value)[:2000]))
+    t0 = getattr(g, "t0", None)
+    first, lines = VIEW_SOURCE.get(request.endpoint, (None, []))
+    return {
+        "report": msg,
+        "function": getattr(fn, "__name__", ""),
+        "stop_line": tb.tb_lineno if tb is not None else None,
+        "first_line": first,
+        "lines": lines,
+        "values": values,
+        "ms": (time.perf_counter() - t0) * 1000.0 if t0 else None,
+    }
+
+
 @app.errorhandler(InternalServerError)
 def _stopped_by_eyalsec(e):
     """es-python in Protect mode raises RuntimeError("EyalSec: ...") at the
@@ -2132,6 +2177,7 @@ def _stopped_by_eyalsec(e):
     msg = str(orig) if orig is not None else ""
     if isinstance(orig, RuntimeError) and msg.startswith("EyalSec:"):
         g.eyalsec_stopped = True
+        g.eyalsec_block = _block_details(orig, msg)
         return Response("Stopped by EyalSec es-python.\n" + msg + "\n",
                         status=403, mimetype="text/plain")
     return e
@@ -2183,11 +2229,38 @@ def _open_source_page(resp):
     else:
         body = resp.get_data(as_text=True)[:200000]
     url = landing.code_link(SOURCE_REF, "app.py", line) if line else None
+    block = getattr(g, "eyalsec_block", None)
+    if stopped and block:
+        row = CATALOG.get(request.path)
+        stop_url = (landing.code_link(SOURCE_REF, "app.py", block["stop_line"])
+                    if block["stop_line"] else url)
+        page = landing.blocked_page(
+            method=request.method, path=request.path,
+            full_path=urllib.parse.unquote(request.full_path.rstrip("?")),
+            args=[v for _, v in request.args.items(multi=True)],
+            block=block, vuln=row[6] if row else None,
+            source=row[4] if row else None, sink=row[5] if row else None,
+            safe=_SAFE_SIBLING.get(request.path), code_url=stop_url)
+        resp.set_data(page)
+        resp.mimetype = "text/html"
+        return resp
     page = landing.response_page(title, body, code_url=url, line=line,
                                  live=LIVE_DEMO, stopped=stopped)
     resp.set_data(page)
     resp.mimetype = "text/html"
     return resp
+
+
+# The source of every route function, read once at startup, so a stopped
+# request can show the code that did not run. path -> catalog row.
+VIEW_SOURCE = {}
+for _ep, _fn in list(app.view_functions.items()):
+    try:
+        _lines, _first = inspect.getsourcelines(_fn)
+    except (OSError, TypeError):
+        continue
+    VIEW_SOURCE[_ep] = (_first, [ln.rstrip("\n") for ln in _lines])
+CATALOG = {row[2]: row for row in ENDPOINTS}
 
 
 @app.get("/")

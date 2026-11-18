@@ -8,6 +8,13 @@ Notable changes to vulnerable-python. The format follows
 
 ### Added
 
+- A full page for every attack es-python stops, shown in the browser: the
+  severity and what the attacker was after, a clear "Blocked" verdict, the
+  request with the attacker's input marked, the endpoint's own code with the
+  exact line where it was stopped, the values that were about to reach the
+  operation (taken from the stopped call, not reconstructed), a step-by-step
+  timeline with the measured time to stop, and a link to the safe version.
+  Command-line clients still get the short plain-text answer.
 - A secure counterpart for every injectable endpoint, under `/safe/...`
   (parameterised SQL, an argument list with no shell, a contained file path,
   an arithmetic evaluator, JSON instead of pickle/marshal, an allow-listed

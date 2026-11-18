@@ -130,3 +130,43 @@ def test_post_sample_payloads_exist(client):
     for name in ("pickle", "marshal", "xxe"):
         resp = client.get(f"/sample/{name}")
         assert resp.status_code == 200 and len(resp.get_data()) > 0
+
+
+class _StoppedCursor:
+    """Stands in for the database when es-python stops the query: the driver
+    call raises the same RuntimeError es-python raises in Protect mode."""
+    def execute(self, query, *a):
+        raise RuntimeError("EyalSec: untrusted data from fd:10 reached sink sqlite execute")
+
+    def close(self):
+        pass
+
+
+def test_stopped_attack_page_shows_alarm_code_and_value(client, monkeypatch):
+    monkeypatch.setattr(demo, "db_connect", lambda: _StoppedCursor())
+    resp = client.get("/sqli", query_string={"name": "x' OR '1'='1"}, headers=BROWSER)
+    assert resp.status_code == 403
+    page = resp.get_data(as_text=True)
+    assert "CRITICAL" in page and "SQL injection" in page
+    assert "The query never reached the database." in page
+    assert "STOPPED HERE" in page
+    # the real line of the sink, struck through, and the query that reached it
+    sink_line = demo.VIEW_SOURCE["sqli"][0] + next(
+        i for i, ln in enumerate(demo.VIEW_SOURCE["sqli"][1]) if "db.execute(query)" in ln)
+    assert 'class="ln hit"><span class="n">%d<' % sink_line in page
+    assert "<mark>x&#x27; OR &#x27;1&#x27;=&#x27;1</mark>" in page
+    assert "SELECT id, name, bio, secret FROM users WHERE name = &#x27;<mark>" in page
+    assert "/safe/sqli?name=alice" in page
+
+
+def test_stopped_attack_page_escapes_the_input(client, monkeypatch):
+    monkeypatch.setattr(demo, "db_connect", lambda: _StoppedCursor())
+    page = client.get("/sqli?name=<script>alert(1)</script>", headers=BROWSER).get_data(as_text=True)
+    assert "<script>alert(1)" not in page
+
+
+def test_stopped_attack_plain_client_gets_plain_text(client, monkeypatch):
+    monkeypatch.setattr(demo, "db_connect", lambda: _StoppedCursor())
+    resp = client.get("/sqli?name=x")
+    assert resp.status_code == 403 and resp.mimetype == "text/plain"
+    assert resp.get_data(as_text=True).startswith("Stopped by EyalSec es-python.")
